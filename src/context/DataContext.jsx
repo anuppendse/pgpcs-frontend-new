@@ -87,6 +87,8 @@ function buildInitialState() {
     permissions: {},
     shifts: [],
     shiftAssignments: [],
+    routes: [],
+    routePosts: [],
     deviceSync: [],
     settings: {},
     sessions: [],
@@ -1054,6 +1056,63 @@ function reducer(state, action) {
         ...state,
         shiftAssignments: state.shiftAssignments.filter(
           (assignment) => assignment.id !== action.payload.id
+        ),
+      };
+
+    /* =====================================================
+       ROUTES
+    ===================================================== */
+
+    case "SET_ROUTES":
+      return {
+        ...state,
+        routes: action.payload,
+      };
+
+    case "ADD_ROUTE":
+      return {
+        ...state,
+        routes: [...state.routes, action.payload],
+      };
+
+    case "UPDATE_ROUTE":
+      return {
+        ...state,
+        routes: state.routes.map((route) =>
+          route.id === action.payload.id
+            ? { ...route, ...action.payload.data }
+            : route
+        ),
+      };
+
+    /* =====================================================
+       ROUTE POSTS
+    ===================================================== */
+
+    case "SET_ROUTE_POSTS":
+      return {
+        ...state,
+        // Replace only this route's posts, keep other routes' posts intact
+        // (route posts are loaded per-route, not all at once).
+        routePosts: [
+          ...state.routePosts.filter(
+            (rp) => rp.route_id !== action.payload.route_id
+          ),
+          ...action.payload.items,
+        ],
+      };
+
+    case "ADD_ROUTE_POST":
+      return {
+        ...state,
+        routePosts: [...state.routePosts, action.payload],
+      };
+
+    case "DELETE_ROUTE_POST":
+      return {
+        ...state,
+        routePosts: state.routePosts.filter(
+          (rp) => rp.id !== action.payload.id
         ),
       };
 
@@ -4751,6 +4810,357 @@ export function DataProvider({
         } catch (error) {
           console.error("Delete shift assignment error:", error);
           return { ok: false, error: "Unable to connect to Shift Assignments API." };
+        }
+      },
+
+      /* ===================================================
+         ROUTES
+      =================================================== */
+
+      loadRoutes: async () => {
+        if (!token) {
+          return { ok: false, error: "Authentication token is missing." };
+        }
+
+        try {
+          const response = await fetch(`${API_BASE_URL}/routes`, {
+            method: "GET",
+            headers: authHeaders(),
+          });
+
+          const data = await parseResponse(response);
+
+          if (response.status === 401) {
+            dispatch({ type: "WEB_LOGOUT" });
+            return { ok: false, error: "Session expired. Please log in again." };
+          }
+
+          if (!response.ok) {
+            return {
+              ok: false,
+              error: data.error || data.message || "Unable to load routes.",
+            };
+          }
+
+          const routes = (Array.isArray(data.items) ? data.items : []).map(
+            (route) => ({
+              ...route,
+              id: route.route_id,
+              name: route.route_name,
+              active: route.status === "ACTIVE",
+            })
+          );
+
+          dispatch({ type: "SET_ROUTES", payload: routes });
+
+          return { ok: true, routes };
+        } catch (error) {
+          console.error("Load routes error:", error);
+          return { ok: false, error: "Unable to connect to Routes API." };
+        }
+      },
+
+      createRoute: async (data = {}) => {
+        if (!token) {
+          return { ok: false, error: "Authentication token is missing." };
+        }
+
+        const payload = {
+          route_name: (data.name || data.route_name || "").trim(),
+          enforce_sequence: Boolean(data.enforceSequence ?? data.enforce_sequence),
+        };
+
+        if (!payload.route_name) {
+          return { ok: false, error: "Route name is required." };
+        }
+
+        try {
+          const response = await fetch(`${API_BASE_URL}/routes`, {
+            method: "POST",
+            headers: authHeaders(),
+            body: JSON.stringify(payload),
+          });
+
+          const result = await parseResponse(response);
+
+          if (!response.ok) {
+            return {
+              ok: false,
+              error: result.error || result.message || "Unable to create route.",
+            };
+          }
+
+          const route = {
+            ...result,
+            id: result.route_id,
+            name: result.route_name,
+            active: result.status === "ACTIVE",
+          };
+
+          dispatch({ type: "ADD_ROUTE", payload: route });
+
+          return { ok: true, route };
+        } catch (error) {
+          console.error("Create route error:", error);
+          return { ok: false, error: "Unable to connect to Routes API." };
+        }
+      },
+
+      updateRoute: async (id, data = {}) => {
+        if (!token) {
+          return { ok: false, error: "Authentication token is missing." };
+        }
+
+        const payload = {};
+        if (data.name !== undefined || data.route_name !== undefined) {
+          payload.route_name = (data.name ?? data.route_name ?? "").trim();
+        }
+        if (data.enforceSequence !== undefined || data.enforce_sequence !== undefined) {
+          payload.enforce_sequence = Boolean(
+            data.enforceSequence ?? data.enforce_sequence
+          );
+        }
+        if (data.status !== undefined) {
+          payload.status = data.status;
+        }
+
+        try {
+          const response = await fetch(`${API_BASE_URL}/routes/${id}`, {
+            method: "PUT",
+            headers: authHeaders(),
+            body: JSON.stringify(payload),
+          });
+
+          const result = await parseResponse(response);
+
+          if (!response.ok) {
+            return {
+              ok: false,
+              error: result.error || result.message || "Unable to update route.",
+            };
+          }
+
+          dispatch({
+            type: "UPDATE_ROUTE",
+            payload: {
+              id,
+              data: {
+                ...result,
+                name: result.route_name,
+                active: result.status === "ACTIVE",
+              },
+            },
+          });
+
+          return { ok: true, route: result };
+        } catch (error) {
+          console.error("Update route error:", error);
+          return { ok: false, error: "Unable to connect to Routes API." };
+        }
+      },
+
+      // Active/Inactive toggle, same pattern as togglePostActive/toggleShiftActive.
+      toggleRouteActive: async (id) => {
+        const route = state.routes.find((item) => item.id === id);
+
+        if (!route) {
+          return { ok: false, error: "Route not found." };
+        }
+
+        if (!token) {
+          return { ok: false, error: "Authentication token is missing." };
+        }
+
+        const newActiveStatus = !route.active;
+
+        try {
+          const response = await fetch(`${API_BASE_URL}/routes/${id}`, {
+            method: "PUT",
+            headers: authHeaders(),
+            body: JSON.stringify({
+              status: newActiveStatus ? "active" : "inactive",
+            }),
+          });
+
+          const result = await parseResponse(response);
+
+          if (!response.ok) {
+            return {
+              ok: false,
+              error:
+                result.error || result.message || "Unable to update route status.",
+            };
+          }
+
+          dispatch({
+            type: "UPDATE_ROUTE",
+            payload: {
+              id,
+              data: {
+                ...result,
+                name: result.route_name,
+                active: result.status === "ACTIVE",
+              },
+            },
+          });
+
+          return { ok: true, route: result };
+        } catch (error) {
+          console.error("Toggle route status error:", error);
+          return { ok: false, error: "Unable to connect to Routes API." };
+        }
+      },
+
+      /* ===================================================
+         ROUTE POSTS
+      =================================================== */
+
+      loadRoutePosts: async (routeId) => {
+        if (!token) {
+          return { ok: false, error: "Authentication token is missing." };
+        }
+
+        try {
+          const response = await fetch(`${API_BASE_URL}/routes/${routeId}/posts`, {
+            method: "GET",
+            headers: authHeaders(),
+          });
+
+          const data = await parseResponse(response);
+
+          if (!response.ok) {
+            return {
+              ok: false,
+              error: data.error || data.message || "Unable to load route posts.",
+            };
+          }
+
+          const items = (Array.isArray(data.items) ? data.items : []).map((rp) => ({
+            ...rp,
+            id: rp.route_post_id,
+          }));
+
+          dispatch({
+            type: "SET_ROUTE_POSTS",
+            payload: { route_id: routeId, items },
+          });
+
+          return { ok: true, items };
+        } catch (error) {
+          console.error("Load route posts error:", error);
+          return { ok: false, error: "Unable to connect to Routes API." };
+        }
+      },
+
+      addRoutePost: async (routeId, data = {}) => {
+        if (!token) {
+          return { ok: false, error: "Authentication token is missing." };
+        }
+
+        const payload = {
+          post_id: data.post_id ?? data.postId,
+        };
+        if (data.expected_offset_mins !== undefined) {
+          payload.expected_offset_mins = data.expected_offset_mins;
+        }
+
+        if (!payload.post_id) {
+          return { ok: false, error: "A guard post is required." };
+        }
+
+        try {
+          const response = await fetch(`${API_BASE_URL}/routes/${routeId}/posts`, {
+            method: "POST",
+            headers: authHeaders(),
+            body: JSON.stringify(payload),
+          });
+
+          const result = await parseResponse(response);
+
+          if (!response.ok) {
+            return {
+              ok: false,
+              error: result.error || result.message || "Unable to add post to route.",
+            };
+          }
+
+          const routePost = { ...result, id: result.route_post_id };
+          dispatch({ type: "ADD_ROUTE_POST", payload: routePost });
+
+          return { ok: true, routePost };
+        } catch (error) {
+          console.error("Add route post error:", error);
+          return { ok: false, error: "Unable to connect to Routes API." };
+        }
+      },
+
+      reorderRoutePosts: async (routeId, order) => {
+        if (!token) {
+          return { ok: false, error: "Authentication token is missing." };
+        }
+
+        try {
+          const response = await fetch(
+            `${API_BASE_URL}/routes/${routeId}/posts/reorder`,
+            {
+              method: "PUT",
+              headers: authHeaders(),
+              body: JSON.stringify({ order }),
+            }
+          );
+
+          const result = await parseResponse(response);
+
+          if (!response.ok) {
+            return {
+              ok: false,
+              error:
+                result.error || result.message || "Unable to reorder route posts.",
+            };
+          }
+
+          const items = (Array.isArray(result.items) ? result.items : []).map(
+            (rp) => ({ ...rp, id: rp.route_post_id })
+          );
+
+          dispatch({
+            type: "SET_ROUTE_POSTS",
+            payload: { route_id: routeId, items },
+          });
+
+          return { ok: true, items };
+        } catch (error) {
+          console.error("Reorder route posts error:", error);
+          return { ok: false, error: "Unable to connect to Routes API." };
+        }
+      },
+
+      removeRoutePost: async (routeId, routePostId) => {
+        if (!token) {
+          return { ok: false, error: "Authentication token is missing." };
+        }
+
+        try {
+          const response = await fetch(
+            `${API_BASE_URL}/routes/${routeId}/posts/${routePostId}`,
+            { method: "DELETE", headers: authHeaders() }
+          );
+
+          const result = await parseResponse(response);
+
+          if (!response.ok) {
+            return {
+              ok: false,
+              error: result.error || result.message || "Unable to remove post.",
+            };
+          }
+
+          dispatch({ type: "DELETE_ROUTE_POST", payload: { id: routePostId } });
+
+          return { ok: true };
+        } catch (error) {
+          console.error("Remove route post error:", error);
+          return { ok: false, error: "Unable to connect to Routes API." };
         }
       },
 

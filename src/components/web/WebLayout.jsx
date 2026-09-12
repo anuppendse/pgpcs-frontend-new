@@ -16,6 +16,7 @@ const MODULE_ROUTES = [
   { module: "QR Code Management", path: "/web/qr" },
   { module: "Officer Management", path: "/web/officers" },
   { module: "Round & Route Management", path: "/web/rounds" },
+  { module: "Round & Route Management", path: "/web/routes" },
   { module: "Shift Management", path: "/web/shifts" },
   { module: "Alerts & Exceptions", path: "/web/alerts" },
   { module: "Reports & Audit Trail", path: "/web/reports" },
@@ -32,8 +33,19 @@ export default function WebLayout({ crumb, title, right, requiredModule, childre
 
   if (!webSession) return <Navigate to="/web/login" replace />;
 
+  // TEMPORARY: Supervisor gets the same full-access bypass as
+  // Administrator. permissions is never actually seeded for any
+  // non-Administrator role today (the only seeding effect, in
+  // UserRoles.jsx, only writes "Administrator" and only when an admin
+  // visits that page) - so without this, Supervisor always lands on
+  // "No modules available". Remove this bypass once permissions are
+  // properly granted via User Roles & Access Control (or seeded some
+  // other reliable way) instead of bypassed here.
+  const hasFullAccess =
+    webSession.role === "Administrator" || webSession.role === "Supervisor";
+
   const canView =
-    webSession.role === "Administrator" ||
+    hasFullAccess ||
     !requiredModule ||
     permissions[webSession.role]?.[requiredModule]?.view;
 
@@ -51,8 +63,7 @@ export default function WebLayout({ crumb, title, right, requiredModule, childre
     const fallback = MODULE_ROUTES.find(
       ({ module, path }) =>
         path !== location.pathname &&
-        (webSession.role === "Administrator" ||
-          permissions[webSession.role]?.[module]?.view)
+        (hasFullAccess || permissions[webSession.role]?.[module]?.view)
     );
 
     if (fallback) {

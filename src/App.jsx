@@ -9,6 +9,7 @@ import GuardPosts from "./pages/web/GuardPosts";
 import QRManagement from "./pages/web/QRManagement";
 import Officers from "./pages/web/Officers";
 import RoundsRoutes from "./pages/web/RoundsRoutes";
+import RouteManagement from "./pages/web/RouteManagement";
 import ShiftManagement from "./pages/web/ShiftManagement";
 import Alerts from "./pages/web/Alerts";
 import Reports from "./pages/web/Reports";
@@ -40,6 +41,7 @@ export default function App() {
           <Route path="/web/qr" element={<QRManagement />} />
           <Route path="/web/officers" element={<Officers />} />
           <Route path="/web/rounds" element={<RoundsRoutes />} />
+          <Route path="/web/routes" element={<RouteManagement />} />
           <Route path="/web/shifts" element={<ShiftManagement />} />
           <Route path="/web/alerts" element={<Alerts />} />
           <Route path="/web/reports" element={<Reports />} />

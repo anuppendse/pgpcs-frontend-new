@@ -25,6 +25,7 @@ const NAV = [
   { to: "/web/qr", label: "QR Code Management", icon: QrCode, module: "QR Code Management", section: "Configuration" },
   { to: "/web/officers", label: "Officer Management", icon: Users, module: "Officer Management", section: "Configuration" },
   { to: "/web/rounds", label: "Round & Route Management", icon: Route, module: "Round & Route Management", section: "Configuration" },
+  { to: "/web/routes", label: "Routes", icon: Route, module: "Round & Route Management", section: "Configuration" },
   { to: "/web/shifts", label: "Shift Management", icon: Clock, module: "Shift Management", section: "Configuration" },
   { to: "/web/alerts", label: "Alerts & Exceptions", icon: TriangleAlert, module: "Alerts & Exceptions", section: "Reporting" },
   { to: "/web/reports", label: "Reports", icon: BarChart3, module: "Reports & Audit Trail", section: "Reporting" },
@@ -37,7 +38,11 @@ export default function Sidebar() {
   const { webSession, permissions, actions } = useData();
   const navigate = useNavigate();
   const perms = permissions[webSession?.role] || {};
-  const visible = NAV.filter((item) => webSession?.role === "Administrator" || perms[item.module]?.view);
+  // TEMPORARY: matches the same bypass in WebLayout.jsx - see the
+  // comment there for why. Remove both together once permissions are
+  // properly granted rather than bypassed.
+  const hasFullAccess = webSession?.role === "Administrator" || webSession?.role === "Supervisor";
+  const visible = NAV.filter((item) => hasFullAccess || perms[item.module]?.view);
 
   let lastSection = null;
 
