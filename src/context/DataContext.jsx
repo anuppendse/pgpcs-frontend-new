@@ -89,6 +89,8 @@ function buildInitialState() {
     shiftAssignments: [],
     routes: [],
     routePosts: [],
+    roundSchedules: [],
+    roundInstances: [],
     deviceSync: [],
     settings: {},
     sessions: [],
@@ -1096,7 +1098,7 @@ function reducer(state, action) {
         // (route posts are loaded per-route, not all at once).
         routePosts: [
           ...state.routePosts.filter(
-            (rp) => rp.route_id !== action.payload.route_id
+            (rp) => Number(rp.route_id) !== Number(action.payload.route_id)
           ),
           ...action.payload.items,
         ],
@@ -1114,6 +1116,43 @@ function reducer(state, action) {
         routePosts: state.routePosts.filter(
           (rp) => rp.id !== action.payload.id
         ),
+      };
+
+    /* =====================================================
+       ROUND SCHEDULES
+    ===================================================== */
+
+    case "SET_ROUND_SCHEDULES":
+      return {
+        ...state,
+        roundSchedules: [
+          ...state.roundSchedules.filter(
+            (s) => Number(s.shift_id) !== Number(action.payload.shift_id)
+          ),
+          ...action.payload.items,
+        ],
+      };
+
+    case "ADD_ROUND_SCHEDULE":
+      return {
+        ...state,
+        roundSchedules: [...state.roundSchedules, action.payload],
+      };
+
+    /* =====================================================
+       ROUND INSTANCES
+    ===================================================== */
+
+    case "SET_ROUND_INSTANCES":
+      return {
+        ...state,
+        roundInstances: action.payload,
+      };
+
+    case "ADD_ROUND_INSTANCE":
+      return {
+        ...state,
+        roundInstances: [...state.roundInstances, action.payload],
       };
 
     /* =====================================================
@@ -5161,6 +5200,194 @@ export function DataProvider({
         } catch (error) {
           console.error("Remove route post error:", error);
           return { ok: false, error: "Unable to connect to Routes API." };
+        }
+      },
+
+      /* ===================================================
+         ROUND SCHEDULES
+      =================================================== */
+
+      loadRoundSchedules: async (shiftId) => {
+        if (!token) {
+          return { ok: false, error: "Authentication token is missing." };
+        }
+
+        try {
+          const response = await fetch(
+            `${API_BASE_URL}/round-schedules?shift_id=${shiftId}`,
+            { method: "GET", headers: authHeaders() }
+          );
+
+          const data = await parseResponse(response);
+
+          if (!response.ok) {
+            return {
+              ok: false,
+              error: data.error || data.message || "Unable to load round schedules.",
+            };
+          }
+
+          const items = (Array.isArray(data.items) ? data.items : []).map((s) => ({
+            ...s,
+            id: s.schedule_id,
+          }));
+
+          dispatch({
+            type: "SET_ROUND_SCHEDULES",
+            payload: { shift_id: shiftId, items },
+          });
+
+          return { ok: true, items };
+        } catch (error) {
+          console.error("Load round schedules error:", error);
+          return { ok: false, error: "Unable to connect to Round Schedules API." };
+        }
+      },
+
+      createRoundSchedule: async (data = {}) => {
+        if (!token) {
+          return { ok: false, error: "Authentication token is missing." };
+        }
+
+        const payload = {
+          shift_id: data.shift_id,
+          route_id: data.route_id,
+          round_no: data.round_no,
+          scheduled_time: data.scheduled_time,
+          tolerance_minutes: data.tolerance_minutes,
+        };
+
+        if (!payload.shift_id || !payload.route_id || !payload.round_no) {
+          return {
+            ok: false,
+            error: "Shift, route and round number are required.",
+          };
+        }
+        if (!payload.scheduled_time) {
+          return { ok: false, error: "Scheduled time is required." };
+        }
+
+        try {
+          const response = await fetch(`${API_BASE_URL}/round-schedules`, {
+            method: "POST",
+            headers: authHeaders(),
+            body: JSON.stringify(payload),
+          });
+
+          const result = await parseResponse(response);
+
+          if (!response.ok) {
+            return {
+              ok: false,
+              error:
+                result.error || result.message || "Unable to create round schedule.",
+            };
+          }
+
+          const schedule = { ...result, id: result.schedule_id };
+          dispatch({ type: "ADD_ROUND_SCHEDULE", payload: schedule });
+
+          return { ok: true, schedule };
+        } catch (error) {
+          console.error("Create round schedule error:", error);
+          return { ok: false, error: "Unable to connect to Round Schedules API." };
+        }
+      },
+
+      /* ===================================================
+         ROUND INSTANCES
+      =================================================== */
+
+      loadRoundInstances: async (params = {}) => {
+        if (!token) {
+          return { ok: false, error: "Authentication token is missing." };
+        }
+
+        try {
+          const searchParams = new URLSearchParams();
+          if (params.round_date) {
+            searchParams.set("round_date", params.round_date);
+          }
+          if (params.officer_id !== undefined) {
+            searchParams.set("officer_id", String(params.officer_id));
+          }
+          const query = searchParams.toString();
+
+          const response = await fetch(
+            `${API_BASE_URL}/v1/round-instances${query ? `?${query}` : ""}`,
+            { method: "GET", headers: authHeaders() }
+          );
+
+          const data = await parseResponse(response);
+
+          if (!response.ok) {
+            return {
+              ok: false,
+              error: data.error || data.message || "Unable to load round instances.",
+            };
+          }
+
+          const items = (Array.isArray(data.items) ? data.items : []).map((ri) => ({
+            ...ri,
+            id: ri.round_instance_id,
+          }));
+
+          dispatch({ type: "SET_ROUND_INSTANCES", payload: items });
+
+          return { ok: true, items };
+        } catch (error) {
+          console.error("Load round instances error:", error);
+          return { ok: false, error: "Unable to connect to Round Instances API." };
+        }
+      },
+
+      createRoundInstance: async (data = {}) => {
+        if (!token) {
+          return { ok: false, error: "Authentication token is missing." };
+        }
+
+        const payload = {
+          schedule_id: data.schedule_id,
+          officer_id: data.officer_id,
+          round_date: data.round_date,
+        };
+        // scheduled_start_time is optional - the backend computes it from
+        // the schedule + round_date when omitted.
+        if (data.scheduled_start_time) {
+          payload.scheduled_start_time = data.scheduled_start_time;
+        }
+
+        if (!payload.schedule_id || !payload.officer_id || !payload.round_date) {
+          return {
+            ok: false,
+            error: "A round schedule, officer and date are required.",
+          };
+        }
+
+        try {
+          const response = await fetch(`${API_BASE_URL}/v1/round-instances`, {
+            method: "POST",
+            headers: authHeaders(),
+            body: JSON.stringify(payload),
+          });
+
+          const result = await parseResponse(response);
+
+          if (!response.ok) {
+            return {
+              ok: false,
+              error:
+                result.error || result.message || "Unable to create round instance.",
+            };
+          }
+
+          const roundInstance = { ...result, id: result.round_instance_id };
+          dispatch({ type: "ADD_ROUND_INSTANCE", payload: roundInstance });
+
+          return { ok: true, roundInstance };
+        } catch (error) {
+          console.error("Create round instance error:", error);
+          return { ok: false, error: "Unable to connect to Round Instances API." };
         }
       },
 

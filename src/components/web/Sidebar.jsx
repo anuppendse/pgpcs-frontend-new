@@ -26,6 +26,8 @@ const NAV = [
   { to: "/web/officers", label: "Officer Management", icon: Users, module: "Officer Management", section: "Configuration" },
   { to: "/web/rounds", label: "Round & Route Management", icon: Route, module: "Round & Route Management", section: "Configuration" },
   { to: "/web/routes", label: "Routes", icon: Route, module: "Round & Route Management", section: "Configuration" },
+  { to: "/web/round-schedules", label: "Round Schedules", icon: Route, module: "Round & Route Management", section: "Configuration" },
+  { to: "/web/round-instances", label: "Round Instances", icon: Route, module: "Round & Route Management", section: "Configuration" },
   { to: "/web/shifts", label: "Shift Management", icon: Clock, module: "Shift Management", section: "Configuration" },
   { to: "/web/alerts", label: "Alerts & Exceptions", icon: TriangleAlert, module: "Alerts & Exceptions", section: "Reporting" },
   { to: "/web/reports", label: "Reports", icon: BarChart3, module: "Reports & Audit Trail", section: "Reporting" },

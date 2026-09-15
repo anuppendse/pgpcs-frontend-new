@@ -17,6 +17,8 @@ const MODULE_ROUTES = [
   { module: "Officer Management", path: "/web/officers" },
   { module: "Round & Route Management", path: "/web/rounds" },
   { module: "Round & Route Management", path: "/web/routes" },
+  { module: "Round & Route Management", path: "/web/round-schedules" },
+  { module: "Round & Route Management", path: "/web/round-instances" },
   { module: "Shift Management", path: "/web/shifts" },
   { module: "Alerts & Exceptions", path: "/web/alerts" },
   { module: "Reports & Audit Trail", path: "/web/reports" },
