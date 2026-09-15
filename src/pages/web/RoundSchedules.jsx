@@ -18,6 +18,7 @@ export default function RoundSchedules() {
 
   const [shiftId, setShiftId] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
+  const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
 
@@ -45,6 +46,7 @@ export default function RoundSchedules() {
   }
 
   function openAdd() {
+    setEditingId(null);
     setForm({
       ...emptyForm,
       shift_id: shiftId || shifts[0]?.id || "",
@@ -53,10 +55,38 @@ export default function RoundSchedules() {
     setModalOpen(true);
   }
 
+  function openEdit(schedule) {
+    setEditingId(schedule.id);
+    setForm({
+      shift_id: schedule.shift_id,
+      route_id: schedule.route_id,
+      round_no: schedule.round_no,
+      scheduled_time: schedule.scheduled_time || "",
+      tolerance_minutes: schedule.tolerance_minutes ?? 10,
+    });
+    setModalOpen(true);
+  }
+
   function closeModal() {
     if (saving) return;
     setModalOpen(false);
+    setEditingId(null);
     setForm(emptyForm);
+  }
+
+  async function handleDelete(schedule) {
+    if (
+      !window.confirm(
+        `Delete Round ${schedule.round_no} (${routeName(schedule.route_id)})?`
+      )
+    ) {
+      return;
+    }
+
+    const result = await actions.deleteRoundSchedule(schedule.id);
+    if (!result?.ok) {
+      alert(result?.error || "Unable to delete round schedule.");
+    }
   }
 
   // Mirrors the backend's overnight-aware shift-window check, for
@@ -83,6 +113,7 @@ export default function RoundSchedules() {
 
     const duplicate = roundSchedules.find(
       (s) =>
+        s.id !== editingId &&
         Number(s.shift_id) === Number(form.shift_id) &&
         Number(s.route_id) === Number(form.route_id) &&
         Number(s.round_no) === Number(form.round_no)
@@ -90,6 +121,20 @@ export default function RoundSchedules() {
     if (duplicate) {
       alert(
         `Round ${form.round_no} for this shift and route already exists. Pick a different round number, or edit the existing one.`
+      );
+      return;
+    }
+
+    const timeClash = roundSchedules.find(
+      (s) =>
+        s.id !== editingId &&
+        Number(s.shift_id) === Number(form.shift_id) &&
+        Number(s.route_id) === Number(form.route_id) &&
+        s.scheduled_time === form.scheduled_time
+    );
+    if (timeClash) {
+      alert(
+        `Round ${timeClash.round_no} on this route is already scheduled at ${form.scheduled_time}.`
       );
       return;
     }
@@ -104,14 +149,23 @@ export default function RoundSchedules() {
 
     setSaving(true);
     try {
-      const result = await actions.createRoundSchedule({
-        ...form,
-        round_no: Number(form.round_no),
-        tolerance_minutes: Number(form.tolerance_minutes),
-      });
+      const result = editingId
+        ? await actions.updateRoundSchedule(editingId, {
+            round_no: Number(form.round_no),
+            scheduled_time: form.scheduled_time,
+            tolerance_minutes: Number(form.tolerance_minutes),
+          })
+        : await actions.createRoundSchedule({
+            ...form,
+            round_no: Number(form.round_no),
+            tolerance_minutes: Number(form.tolerance_minutes),
+          });
 
       if (!result?.ok) {
-        alert(result?.error || "Unable to create round schedule.");
+        alert(
+          result?.error ||
+            `Unable to ${editingId ? "update" : "create"} round schedule.`
+        );
         return;
       }
 
@@ -163,6 +217,7 @@ export default function RoundSchedules() {
                 <th className="border-b border-border pb-2">Route</th>
                 <th className="border-b border-border pb-2">Scheduled Time</th>
                 <th className="border-b border-border pb-2">Tolerance (min)</th>
+                <th className="border-b border-border pb-2">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -180,12 +235,20 @@ export default function RoundSchedules() {
                   <td className="num border-b border-[#EFF2F5] py-2.5 text-inkSoft">
                     {s.tolerance_minutes}
                   </td>
+                  <td className="border-b border-[#EFF2F5] py-2.5">
+                    {canEdit && (
+                      <div className="flex gap-3 text-[11.5px] font-bold text-accent-dark">
+                        <button onClick={() => openEdit(s)}>Edit</button>
+                        <button onClick={() => handleDelete(s)}>Delete</button>
+                      </div>
+                    )}
+                  </td>
                 </tr>
               ))}
 
               {schedulesForShift.length === 0 && (
                 <tr>
-                  <td colSpan={4} className="py-6 text-center text-[12px] text-inkSoft">
+                  <td colSpan={5} className="py-6 text-center text-[12px] text-inkSoft">
                     No round schedules for this shift yet.
                   </td>
                 </tr>
@@ -195,11 +258,16 @@ export default function RoundSchedules() {
         )}
       </Card>
 
-      <Modal open={modalOpen} onClose={closeModal} title="Add Round Schedule">
+      <Modal
+        open={modalOpen}
+        onClose={closeModal}
+        title={editingId ? "Edit Round Schedule" : "Add Round Schedule"}
+      >
         <form onSubmit={handleSave}>
           <Field label="Shift">
             <Select
               required
+              disabled={!!editingId}
               value={form.shift_id}
               onChange={(e) => {
                 const newShiftId = e.target.value;
@@ -215,9 +283,10 @@ export default function RoundSchedules() {
             </Select>
           </Field>
 
-          <Field label="Route">
+          <Field label="Route" hint={editingId ? "Delete and re-add to change shift or route." : undefined}>
             <Select
               required
+              disabled={!!editingId}
               value={form.route_id}
               onChange={(e) => setForm({ ...form, route_id: e.target.value })}
             >
@@ -275,7 +344,7 @@ export default function RoundSchedules() {
               className="w-full justify-center"
               disabled={saving}
             >
-              {saving ? "Saving..." : "Add Round Schedule"}
+              {saving ? "Saving..." : editingId ? "Save Changes" : "Add Round Schedule"}
             </PillButton>
           </div>
         </form>

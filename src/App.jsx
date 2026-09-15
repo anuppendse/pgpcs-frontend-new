@@ -8,7 +8,6 @@ import LiveMonitoring from "./pages/web/LiveMonitoring";
 import GuardPosts from "./pages/web/GuardPosts";
 import QRManagement from "./pages/web/QRManagement";
 import Officers from "./pages/web/Officers";
-import RoundsRoutes from "./pages/web/RoundsRoutes";
 import RouteManagement from "./pages/web/RouteManagement";
 import RoundInstances from "./pages/web/RoundInstances";
 import RoundSchedules from "./pages/web/RoundSchedules";
@@ -42,7 +41,6 @@ export default function App() {
           <Route path="/web/posts" element={<GuardPosts />} />
           <Route path="/web/qr" element={<QRManagement />} />
           <Route path="/web/officers" element={<Officers />} />
-          <Route path="/web/rounds" element={<RoundsRoutes />} />
           <Route path="/web/routes" element={<RouteManagement />} />
           <Route path="/web/round-schedules" element={<RoundSchedules />} />
           <Route path="/web/round-instances" element={<RoundInstances />} />

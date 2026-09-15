@@ -24,7 +24,6 @@ const NAV = [
   { to: "/web/posts", label: "Guard Post Management", icon: ShieldCheck, module: "Guard Post Management", section: "Configuration" },
   { to: "/web/qr", label: "QR Code Management", icon: QrCode, module: "QR Code Management", section: "Configuration" },
   { to: "/web/officers", label: "Officer Management", icon: Users, module: "Officer Management", section: "Configuration" },
-  { to: "/web/rounds", label: "Round & Route Management", icon: Route, module: "Round & Route Management", section: "Configuration" },
   { to: "/web/routes", label: "Routes", icon: Route, module: "Round & Route Management", section: "Configuration" },
   { to: "/web/round-schedules", label: "Round Schedules", icon: Route, module: "Round & Route Management", section: "Configuration" },
   { to: "/web/round-instances", label: "Round Instances", icon: Route, module: "Round & Route Management", section: "Configuration" },

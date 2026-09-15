@@ -15,7 +15,6 @@ const MODULE_ROUTES = [
   { module: "Guard Post Management", path: "/web/posts" },
   { module: "QR Code Management", path: "/web/qr" },
   { module: "Officer Management", path: "/web/officers" },
-  { module: "Round & Route Management", path: "/web/rounds" },
   { module: "Round & Route Management", path: "/web/routes" },
   { module: "Round & Route Management", path: "/web/round-schedules" },
   { module: "Round & Route Management", path: "/web/round-instances" },

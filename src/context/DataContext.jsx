@@ -4,6 +4,7 @@ import React, {
   useEffect,
   useMemo,
   useReducer,
+  useRef,
 } from "react";
 
 import {
@@ -1139,6 +1140,24 @@ function reducer(state, action) {
         roundSchedules: [...state.roundSchedules, action.payload],
       };
 
+    case "UPDATE_ROUND_SCHEDULE":
+      return {
+        ...state,
+        roundSchedules: state.roundSchedules.map((s) =>
+          s.id === action.payload.id
+            ? { ...s, ...action.payload.data }
+            : s
+        ),
+      };
+
+    case "DELETE_ROUND_SCHEDULE":
+      return {
+        ...state,
+        roundSchedules: state.roundSchedules.filter(
+          (s) => s.id !== action.payload.id
+        ),
+      };
+
     /* =====================================================
        ROUND INSTANCES
     ===================================================== */
@@ -1153,6 +1172,14 @@ function reducer(state, action) {
       return {
         ...state,
         roundInstances: [...state.roundInstances, action.payload],
+      };
+
+    case "DELETE_ROUND_INSTANCE":
+      return {
+        ...state,
+        roundInstances: state.roundInstances.filter(
+          (ri) => ri.id !== action.payload.id
+        ),
       };
 
     /* =====================================================
@@ -1221,6 +1248,17 @@ export function DataProvider({
     undefined,
     loadInitialState
   );
+
+  // Request-sequencing guards: when the user reselects a shift/date in
+  // quick succession, multiple fetches for the same resource can be
+  // in flight at once. Without this, a slow response to an OLDER
+  // request can resolve after a newer one and overwrite fresher state
+  // with stale data. Each ref tracks the latest request "ticket" per
+  // resource; a response is only applied if its ticket is still the
+  // most recent one issued.
+  const roundInstancesRequestRef = useRef(0);
+  const roundSchedulesRequestRef = useRef({});
+  const shiftAssignmentsRequestRef = useRef(0);
 
   /* =======================================================
      SAVE FULL STATE TO STORAGE
@@ -4729,6 +4767,8 @@ export function DataProvider({
           return { ok: false, error: "Authentication token is missing." };
         }
 
+        const ticket = ++shiftAssignmentsRequestRef.current;
+
         try {
           const searchParams = new URLSearchParams();
           if (params.user_id !== undefined) {
@@ -4766,7 +4806,9 @@ export function DataProvider({
             (a) => ({ ...a, id: a.assignment_id })
           );
 
-          dispatch({ type: "SET_SHIFT_ASSIGNMENTS", payload: assignments });
+          if (ticket === shiftAssignmentsRequestRef.current) {
+            dispatch({ type: "SET_SHIFT_ASSIGNMENTS", payload: assignments });
+          }
 
           return { ok: true, assignments };
         } catch (error) {
@@ -5212,6 +5254,10 @@ export function DataProvider({
           return { ok: false, error: "Authentication token is missing." };
         }
 
+        const ticket =
+          (roundSchedulesRequestRef.current[shiftId] || 0) + 1;
+        roundSchedulesRequestRef.current[shiftId] = ticket;
+
         try {
           const response = await fetch(
             `${API_BASE_URL}/round-schedules?shift_id=${shiftId}`,
@@ -5232,10 +5278,15 @@ export function DataProvider({
             id: s.schedule_id,
           }));
 
-          dispatch({
-            type: "SET_ROUND_SCHEDULES",
-            payload: { shift_id: shiftId, items },
-          });
+          // Only apply if this is still the latest request for this
+          // specific shift - a slow response to a previously-selected
+          // shift could otherwise overwrite the current one's data.
+          if (roundSchedulesRequestRef.current[shiftId] === ticket) {
+            dispatch({
+              type: "SET_ROUND_SCHEDULES",
+              payload: { shift_id: shiftId, items },
+            });
+          }
 
           return { ok: true, items };
         } catch (error) {
@@ -5294,6 +5345,80 @@ export function DataProvider({
         }
       },
 
+      updateRoundSchedule: async (id, data = {}) => {
+        if (!token) {
+          return { ok: false, error: "Authentication token is missing." };
+        }
+
+        const payload = {};
+        if (data.round_no !== undefined) payload.round_no = data.round_no;
+        if (data.scheduled_time !== undefined) {
+          payload.scheduled_time = data.scheduled_time;
+        }
+        if (data.tolerance_minutes !== undefined) {
+          payload.tolerance_minutes = data.tolerance_minutes;
+        }
+        if (data.is_active !== undefined) payload.is_active = data.is_active;
+
+        try {
+          const response = await fetch(`${API_BASE_URL}/round-schedules/${id}`, {
+            method: "PUT",
+            headers: authHeaders(),
+            body: JSON.stringify(payload),
+          });
+
+          const result = await parseResponse(response);
+
+          if (!response.ok) {
+            return {
+              ok: false,
+              error:
+                result.error || result.message || "Unable to update round schedule.",
+            };
+          }
+
+          dispatch({
+            type: "UPDATE_ROUND_SCHEDULE",
+            payload: { id, data: result },
+          });
+
+          return { ok: true, schedule: result };
+        } catch (error) {
+          console.error("Update round schedule error:", error);
+          return { ok: false, error: "Unable to connect to Round Schedules API." };
+        }
+      },
+
+      deleteRoundSchedule: async (id) => {
+        if (!token) {
+          return { ok: false, error: "Authentication token is missing." };
+        }
+
+        try {
+          const response = await fetch(`${API_BASE_URL}/round-schedules/${id}`, {
+            method: "DELETE",
+            headers: authHeaders(),
+          });
+
+          const result = await parseResponse(response);
+
+          if (!response.ok) {
+            return {
+              ok: false,
+              error:
+                result.error || result.message || "Unable to delete round schedule.",
+            };
+          }
+
+          dispatch({ type: "DELETE_ROUND_SCHEDULE", payload: { id } });
+
+          return { ok: true };
+        } catch (error) {
+          console.error("Delete round schedule error:", error);
+          return { ok: false, error: "Unable to connect to Round Schedules API." };
+        }
+      },
+
       /* ===================================================
          ROUND INSTANCES
       =================================================== */
@@ -5302,6 +5427,8 @@ export function DataProvider({
         if (!token) {
           return { ok: false, error: "Authentication token is missing." };
         }
+
+        const ticket = ++roundInstancesRequestRef.current;
 
         try {
           const searchParams = new URLSearchParams();
@@ -5332,7 +5459,12 @@ export function DataProvider({
             id: ri.round_instance_id,
           }));
 
-          dispatch({ type: "SET_ROUND_INSTANCES", payload: items });
+          // Only apply this response if no newer request has been
+          // issued since - otherwise a slow response to an older
+          // reselect could overwrite fresher data.
+          if (ticket === roundInstancesRequestRef.current) {
+            dispatch({ type: "SET_ROUND_INSTANCES", payload: items });
+          }
 
           return { ok: true, items };
         } catch (error) {
@@ -5387,6 +5519,36 @@ export function DataProvider({
           return { ok: true, roundInstance };
         } catch (error) {
           console.error("Create round instance error:", error);
+          return { ok: false, error: "Unable to connect to Round Instances API." };
+        }
+      },
+
+      deleteRoundInstance: async (id) => {
+        if (!token) {
+          return { ok: false, error: "Authentication token is missing." };
+        }
+
+        try {
+          const response = await fetch(`${API_BASE_URL}/v1/round-instances/${id}`, {
+            method: "DELETE",
+            headers: authHeaders(),
+          });
+
+          const result = await parseResponse(response);
+
+          if (!response.ok) {
+            return {
+              ok: false,
+              error:
+                result.error || result.message || "Unable to delete round instance.",
+            };
+          }
+
+          dispatch({ type: "DELETE_ROUND_INSTANCE", payload: { id } });
+
+          return { ok: true };
+        } catch (error) {
+          console.error("Delete round instance error:", error);
           return { ok: false, error: "Unable to connect to Round Instances API." };
         }
       },

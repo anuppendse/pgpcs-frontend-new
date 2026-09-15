@@ -5,7 +5,38 @@ import Badge from "../../components/web/Badge";
 import { useData } from "../../context/DataContext";
 
 function todayISO() {
-  return new Date().toISOString().slice(0, 10);
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function currentTimeHHMM() {
+  const d = new Date();
+  return `${String(d.getHours()).padStart(2, "0")}:${String(
+    d.getMinutes()
+  ).padStart(2, "0")}`;
+}
+
+// Overnight-aware, same logic as the backend's _time_within_shift and
+// RoundSchedules.jsx's isTimeWithinShift.
+function isTimeWithinShift(shift, timeStr) {
+  if (!shift || !timeStr || !shift.startTime || !shift.endTime) return false;
+  const toMinutes = (t) => {
+    const [h, m] = t.split(":").map(Number);
+    return h * 60 + m;
+  };
+  const minutes = toMinutes(timeStr);
+  const start = toMinutes(shift.startTime);
+  const end = toMinutes(shift.endTime);
+  if (start <= end) return minutes >= start && minutes <= end;
+  return minutes >= start || minutes <= end;
+}
+
+function findCurrentShift(shifts) {
+  const nowStr = currentTimeHHMM();
+  return shifts.find((s) => isTimeWithinShift(s, nowStr)) || null;
 }
 
 export default function RoundInstances() {
@@ -33,6 +64,19 @@ export default function RoundInstances() {
     actions.loadRoutes();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [webSession?.accessToken]);
+
+  // Default to whichever shift is actually active right now, so landing
+  // on (or returning to) this page shows today's current data without
+  // requiring a manual reselect every time. Only runs while shiftId is
+  // still unset, so it never overrides a deliberate manual choice.
+  useEffect(() => {
+    if (shiftId || shifts.length === 0) return;
+    const current = findCurrentShift(shifts);
+    if (current) {
+      setShiftId(current.id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shifts, shiftId]);
 
   useEffect(() => {
     if (!shiftId) return;
@@ -82,10 +126,29 @@ export default function RoundInstances() {
     );
   }
 
+  async function handleRemoveInstance(roundInstance) {
+    if (!window.confirm("Remove this round instance?")) return;
+
+    const result = await actions.deleteRoundInstance(roundInstance.id);
+    if (!result?.ok) {
+      alert(result?.error || "Unable to delete round instance.");
+    }
+  }
+
   async function handleCreate(userId) {
     const scheduleId = picks[userId];
     if (!scheduleId) {
       alert("Pick a route/round for this officer first.");
+      return;
+    }
+
+    const alreadyAssigned = instancesForShiftAndDate.some(
+      (ri) =>
+        Number(ri.officer_id) === Number(userId) &&
+        Number(ri.schedule_id) === Number(scheduleId)
+    );
+    if (alreadyAssigned) {
+      alert("This round is already assigned to this officer on this date.");
       return;
     }
 
@@ -143,6 +206,15 @@ export default function RoundInstances() {
         </div>
       </Card>
 
+      {!shiftId && shifts.length > 0 && (
+        <Card title="Officers Rostered This Shift">
+          <div className="py-8 text-center text-[12px] text-inkSoft">
+            No shift is currently active. Pick one above to see its roster
+            and round assignments.
+          </div>
+        </Card>
+      )}
+
       {shiftId && (
         <Card
           title="Officers Rostered This Shift"
@@ -182,9 +254,20 @@ export default function RoundInstances() {
                             (s) => Number(s.id) === Number(ri.schedule_id)
                           );
                           return (
-                            <Badge key={ri.id} tone="green">
-                              {schedule ? scheduleLabel(schedule) : `Round #${ri.id}`}
-                            </Badge>
+                            <div key={ri.id} className="flex items-center gap-1">
+                              <Badge tone="green">
+                                {schedule ? scheduleLabel(schedule) : `Round #${ri.id}`}
+                              </Badge>
+                              {canEdit && (
+                                <button
+                                  className="text-[11px] font-bold text-status-red"
+                                  title="Remove this round instance"
+                                  onClick={() => handleRemoveInstance(ri)}
+                                >
+                                  ×
+                                </button>
+                              )}
+                            </div>
                           );
                         })}
                       </div>
