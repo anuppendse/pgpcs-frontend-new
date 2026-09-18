@@ -50,7 +50,8 @@ export default function RoundInstances() {
     routes,
     actions,
   } = useData();
-  const canEdit = webSession?.role === "Administrator";
+  const canEdit =
+    webSession?.role === "Administrator" || webSession?.role === "Supervisor";
 
   const [roundDate, setRoundDate] = useState(todayISO());
   const [shiftId, setShiftId] = useState("");
@@ -120,42 +121,6 @@ export default function RoundInstances() {
     return `${routeName} — Round ${schedule.round_no} (${time})`;
   }
 
-  // Local mapping rather than the shared Badge statusTone/statusLabel
-  // helper - that one mixes lowercase and Title-Case cases
-  // inconsistently and doesn't match RoundInstanceStatus's actual
-  // uppercase values (PENDING, IN_PROGRESS, COMPLETED, INCOMPLETE,
-  // MISSED) at all, which would silently fall back to an unlabeled
-  // gray badge for every one of them.
-  function roundStatusTone(status) {
-    switch (status) {
-      case "COMPLETED":
-        return "green";
-      case "IN_PROGRESS":
-        return "blue";
-      case "INCOMPLETE":
-        return "amber";
-      case "ROUND_DELAYED":
-        return "amber";
-      case "MISSED":
-        return "red";
-      case "PENDING":
-      default:
-        return "gray";
-    }
-  }
-
-  function roundStatusLabel(status) {
-    const map = {
-      PENDING: "Pending",
-      IN_PROGRESS: "In Progress",
-      COMPLETED: "Completed",
-      INCOMPLETE: "Incomplete",
-      ROUND_DELAYED: "Delayed",
-      MISSED: "Missed",
-    };
-    return map[status] || status;
-  }
-
   function instancesFor(userId) {
     return instancesForShiftAndDate.filter(
       (ri) => Number(ri.officer_id) === Number(userId)
@@ -168,21 +133,6 @@ export default function RoundInstances() {
     const result = await actions.deleteRoundInstance(roundInstance.id);
     if (!result?.ok) {
       alert(result?.error || "Unable to delete round instance.");
-    }
-  }
-
-  async function handleCloseInstance(roundInstance) {
-    if (
-      !window.confirm(
-        "Close this round now? It'll be marked Incomplete or Missed based on what was actually scanned."
-      )
-    ) {
-      return;
-    }
-
-    const result = await actions.closeRoundInstance(roundInstance.id);
-    if (!result?.ok) {
-      alert(result?.error || "Unable to close round instance.");
     }
   }
 
@@ -306,12 +256,10 @@ export default function RoundInstances() {
                           );
                           return (
                             <div key={ri.id} className="flex items-center gap-1">
-                              <Badge tone={roundStatusTone(ri.status)}>
+                              <Badge tone="green">
                                 {schedule ? scheduleLabel(schedule) : `Round #${ri.id}`}
-                                {" · "}
-                                {roundStatusLabel(ri.status)}
                               </Badge>
-                              {canEdit && ri.status === "PENDING" && (
+                              {canEdit && (
                                 <button
                                   className="text-[11px] font-bold text-status-red"
                                   title="Remove this round instance"
@@ -320,17 +268,6 @@ export default function RoundInstances() {
                                   ×
                                 </button>
                               )}
-                              {canEdit &&
-                                ri.is_overdue &&
-                                (ri.status === "PENDING" ||
-                                  ri.status === "IN_PROGRESS") && (
-                                  <button
-                                    className="text-[11px] font-bold text-accent-dark"
-                                    onClick={() => handleCloseInstance(ri)}
-                                  >
-                                    Close Round
-                                  </button>
-                                )}
                             </div>
                           );
                         })}

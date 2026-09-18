@@ -14,6 +14,7 @@ import {
   LogOut,
 } from "lucide-react";
 import { useData } from "../../context/DataContext";
+import { canViewModule } from "../../lib/rolePermissions";
 import { cn } from "../../lib/utils";
 
 const NAV = [
@@ -36,17 +37,10 @@ export default function Sidebar() {
   const { webSession, permissions, actions } = useData();
   const navigate = useNavigate();
   const perms = permissions[webSession?.role] || {};
-  // TEMPORARY: matches the same bypass in WebLayout.jsx - see the
-  // comment there for why. Remove both together once permissions are
-  // properly granted rather than bypassed.
-  // TEMPORARY: matches the same bypass in WebLayout.jsx - see the
-  // comment there for why. Remove both together once permissions are
-  // properly granted rather than bypassed.
-  const hasFullAccess =
-    webSession?.role === "Administrator" ||
-    webSession?.role === "Supervisor" ||
-    webSession?.role === "Checking Officer";
-  const visible = NAV.filter((item) => hasFullAccess || perms[item.module]?.view);
+  const visible = NAV.filter(
+    (item) =>
+      canViewModule(webSession?.role, item.module) || perms[item.module]?.view
+  );
 
   let lastSection = null;
 

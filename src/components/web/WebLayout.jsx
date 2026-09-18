@@ -3,6 +3,7 @@ import { Navigate, useLocation } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import Topbar from "./Topbar";
 import { useData } from "../../context/DataContext";
+import { canViewModule } from "../../lib/rolePermissions";
 import { ShieldAlert } from "lucide-react";
 
 // Maps each permission-table module name to the route that represents it,
@@ -32,22 +33,8 @@ export default function WebLayout({ crumb, title, right, requiredModule, childre
 
   if (!webSession) return <Navigate to="/web/login" replace />;
 
-  // TEMPORARY: Checking Officer and Supervisor both get the same
-  // full-access bypass as Administrator, for now. permissions is never
-  // actually seeded for any non-Administrator role today (the only
-  // seeding effect, in UserRoles.jsx, only writes "Administrator" and
-  // only when an admin visits that page) - so without this, every
-  // other role always lands on "No modules available". Remove this
-  // bypass once permissions are properly granted via User Roles &
-  // Access Control (or seeded some other reliable way) instead of
-  // bypassed here.
-  const hasFullAccess =
-    webSession.role === "Administrator" ||
-    webSession.role === "Supervisor" ||
-    webSession.role === "Checking Officer";
-
   const canView =
-    hasFullAccess ||
+    canViewModule(webSession.role, requiredModule) ||
     !requiredModule ||
     permissions[webSession.role]?.[requiredModule]?.view;
 
@@ -65,7 +52,8 @@ export default function WebLayout({ crumb, title, right, requiredModule, childre
     const fallback = MODULE_ROUTES.find(
       ({ module, path }) =>
         path !== location.pathname &&
-        (hasFullAccess || permissions[webSession.role]?.[module]?.view)
+        (canViewModule(webSession.role, module) ||
+          permissions[webSession.role]?.[module]?.view)
     );
 
     if (fallback) {
