@@ -8,17 +8,16 @@ import {
   Users,
   Route,
   Clock,
-  TriangleAlert,
   BarChart3,
   History,
   UserCog,
-  Settings,
   LogOut,
 } from "lucide-react";
 import { useData } from "../../context/DataContext";
 import { cn } from "../../lib/utils";
 
 const NAV = [
+  { to: "/web/scan", label: "Scan Now", icon: QrCode, module: "Scan Now", section: "Monitoring" },
   { to: "/web/dashboard", label: "Control Room Overview", icon: LayoutDashboard, module: "Dashboard & Live Monitoring", section: "Monitoring" },
   { to: "/web/monitoring", label: "Live Round Monitoring", icon: Radar, module: "Dashboard & Live Monitoring", section: "Monitoring" },
   { to: "/web/posts", label: "Guard Post Management", icon: ShieldCheck, module: "Guard Post Management", section: "Configuration" },
@@ -28,11 +27,9 @@ const NAV = [
   { to: "/web/round-schedules", label: "Round Schedules", icon: Route, module: "Round & Route Management", section: "Configuration" },
   { to: "/web/round-instances", label: "Round Instances", icon: Route, module: "Round & Route Management", section: "Configuration" },
   { to: "/web/shifts", label: "Shift Management", icon: Clock, module: "Shift Management", section: "Configuration" },
-  { to: "/web/alerts", label: "Alerts & Exceptions", icon: TriangleAlert, module: "Alerts & Exceptions", section: "Reporting" },
   { to: "/web/reports", label: "Reports", icon: BarChart3, module: "Reports & Audit Trail", section: "Reporting" },
   { to: "/web/audit-trail", label: "Guard Post History", icon: History, module: "Reports & Audit Trail", section: "Reporting" },
   { to: "/web/roles", label: "User Roles & Access", icon: UserCog, module: "User & Role Management", section: "Reporting" },
-  { to: "/web/settings", label: "Settings", icon: Settings, module: "Settings", section: "Reporting" },
 ];
 
 export default function Sidebar() {
@@ -42,7 +39,13 @@ export default function Sidebar() {
   // TEMPORARY: matches the same bypass in WebLayout.jsx - see the
   // comment there for why. Remove both together once permissions are
   // properly granted rather than bypassed.
-  const hasFullAccess = webSession?.role === "Administrator" || webSession?.role === "Supervisor";
+  // TEMPORARY: matches the same bypass in WebLayout.jsx - see the
+  // comment there for why. Remove both together once permissions are
+  // properly granted rather than bypassed.
+  const hasFullAccess =
+    webSession?.role === "Administrator" ||
+    webSession?.role === "Supervisor" ||
+    webSession?.role === "Checking Officer";
   const visible = NAV.filter((item) => hasFullAccess || perms[item.module]?.view);
 
   let lastSection = null;

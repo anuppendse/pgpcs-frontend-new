@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { DataProvider } from "./context/DataContext";
 
 import Login from "./pages/web/Login";
+import ScanNow from "./pages/web/ScanNow";
 import Dashboard from "./pages/web/Dashboard";
 import LiveMonitoring from "./pages/web/LiveMonitoring";
 import GuardPosts from "./pages/web/GuardPosts";
@@ -12,11 +13,9 @@ import RouteManagement from "./pages/web/RouteManagement";
 import RoundInstances from "./pages/web/RoundInstances";
 import RoundSchedules from "./pages/web/RoundSchedules";
 import ShiftManagement from "./pages/web/ShiftManagement";
-import Alerts from "./pages/web/Alerts";
 import Reports from "./pages/web/Reports";
 import AuditTrail from "./pages/web/AuditTrail";
 import UserRoles from "./pages/web/UserRoles";
-import Settings from "./pages/web/Settings";
 
 import MobileLogin from "./pages/mobile/MobileLogin";
 import RoundSelection from "./pages/mobile/RoundSelection";
@@ -36,6 +35,7 @@ export default function App() {
 
           {/* Web control-room / admin dashboard */}
           <Route path="/web/login" element={<Login />} />
+          <Route path="/web/scan" element={<ScanNow />} />
           <Route path="/web/dashboard" element={<Dashboard />} />
           <Route path="/web/monitoring" element={<LiveMonitoring />} />
           <Route path="/web/posts" element={<GuardPosts />} />
@@ -45,11 +45,9 @@ export default function App() {
           <Route path="/web/round-schedules" element={<RoundSchedules />} />
           <Route path="/web/round-instances" element={<RoundInstances />} />
           <Route path="/web/shifts" element={<ShiftManagement />} />
-          <Route path="/web/alerts" element={<Alerts />} />
           <Route path="/web/reports" element={<Reports />} />
           <Route path="/web/audit-trail" element={<AuditTrail />} />
           <Route path="/web/roles" element={<UserRoles />} />
-          <Route path="/web/settings" element={<Settings />} />
 
           {/* Handheld scanner app */}
           <Route path="/mobile/login" element={<MobileLogin />} />

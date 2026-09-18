@@ -1182,6 +1182,14 @@ function reducer(state, action) {
         ),
       };
 
+    case "UPDATE_ROUND_INSTANCE":
+      return {
+        ...state,
+        roundInstances: state.roundInstances.map((ri) =>
+          ri.id === action.payload.id ? { ...ri, ...action.payload.data } : ri
+        ),
+      };
+
     /* =====================================================
        SETTINGS
     ===================================================== */
@@ -1603,7 +1611,17 @@ export function DataProvider({
           payload: mergedQRItems,
         });
 
+        // Only the ACTIVE QR code should ever drive what a post
+        // displays as "its" QR - see the matching fix in the
+        // loadQRCodes action for why this can't just loop over every
+        // row (including REPLACED/INACTIVE history).
+        const activeQrByPostId = new Map();
         mergedQRItems.forEach((qr) => {
+          if (qr.status !== "ACTIVE") return;
+          activeQrByPostId.set(Number(qr.post_id), qr);
+        });
+
+        activeQrByPostId.forEach((qr) => {
           const post =
             state.posts.find(
               (item) =>
@@ -4068,7 +4086,21 @@ export function DataProvider({
             payload: mergedQRItems,
           });
 
+          // Only the ACTIVE QR code should ever drive what a post
+          // displays as "its" QR. Previously this looped over every
+          // row returned - including REPLACED/INACTIVE history from
+          // past regenerations - and dispatched GENERATE_QR for each
+          // one, letting whichever happened to be LAST in the array
+          // silently win. That's not tied to "newest" or "active" at
+          // all, just incidental backend ordering - which is why an
+          // old, replaced QR could end up as the one actually shown.
+          const activeQrByPostId = new Map();
           mergedQRItems.forEach((qr) => {
+            if (qr.status !== "ACTIVE") return;
+            activeQrByPostId.set(Number(qr.post_id), qr);
+          });
+
+          activeQrByPostId.forEach((qr) => {
             const post = state.posts.find(
               (item) =>
                 Number(item.backendId) ===
@@ -5295,6 +5327,40 @@ export function DataProvider({
         }
       },
 
+      // Single-schedule lookup, e.g. for showing round_no/scheduled_time
+      // on a round instance when the caller has no shift context to load
+      // the full per-shift list (see Scan Now). Deliberately does NOT
+      // dispatch into the shared roundSchedules state - that state is
+      // shift-scoped (see SET_ROUND_SCHEDULES), and mixing in schedules
+      // from arbitrary shifts here would break that assumption for the
+      // admin screens that rely on it.
+      getRoundSchedule: async (scheduleId) => {
+        if (!token) {
+          return { ok: false, error: "Authentication token is missing." };
+        }
+
+        try {
+          const response = await fetch(
+            `${API_BASE_URL}/round-schedules/${scheduleId}`,
+            { method: "GET", headers: authHeaders() }
+          );
+
+          const data = await parseResponse(response);
+
+          if (!response.ok) {
+            return {
+              ok: false,
+              error: data.error || data.message || "Unable to load round schedule.",
+            };
+          }
+
+          return { ok: true, schedule: { ...data, id: data.schedule_id } };
+        } catch (error) {
+          console.error("Get round schedule error:", error);
+          return { ok: false, error: "Unable to connect to Round Schedules API." };
+        }
+      },
+
       createRoundSchedule: async (data = {}) => {
         if (!token) {
           return { ok: false, error: "Authentication token is missing." };
@@ -5550,6 +5616,359 @@ export function DataProvider({
         } catch (error) {
           console.error("Delete round instance error:", error);
           return { ok: false, error: "Unable to connect to Round Instances API." };
+        }
+      },
+
+      closeRoundInstance: async (id) => {
+        if (!token) {
+          return { ok: false, error: "Authentication token is missing." };
+        }
+
+        try {
+          const response = await fetch(
+            `${API_BASE_URL}/v1/round-instances/${id}/close`,
+            { method: "POST", headers: authHeaders() }
+          );
+
+          const result = await parseResponse(response);
+
+          if (!response.ok) {
+            return {
+              ok: false,
+              error:
+                result.error || result.message || "Unable to close round instance.",
+            };
+          }
+
+          dispatch({
+            type: "UPDATE_ROUND_INSTANCE",
+            payload: { id, data: result.round_instance },
+          });
+
+          return {
+            ok: true,
+            roundInstance: result.round_instance,
+            newExceptions: result.new_exceptions,
+          };
+        } catch (error) {
+          console.error("Close round instance error:", error);
+          return { ok: false, error: "Unable to connect to Round Instances API." };
+        }
+      },
+
+      /* ===================================================
+         DEVICE SELF-REGISTRATION (for the Scan Now kiosk)
+         ---------------------------------------------------
+         The browser/kiosk doing the scanning has no device_id of
+         its own. On first use it generates a random device_code,
+         registers it with the backend to get a real device_id,
+         and caches that in localStorage forever after - see the
+         "how does device_id get captured" discussion this came
+         out of. Returns the numeric device_id either way.
+      =================================================== */
+
+      getOrRegisterDeviceId: async () => {
+        if (!token) {
+          return { ok: false, error: "Authentication token is missing." };
+        }
+
+        const userId = state.webSession?.id;
+        if (!userId) {
+          return { ok: false, error: "Current user is not known yet." };
+        }
+
+        // Keyed per officer, not just per browser - two different
+        // officers sharing the same browser/phone must never end up
+        // sharing one device_id, and this device row should be
+        // traceable back to the officer who registered it (see
+        // assigned_to_user_id below).
+        const idKey = `pgpcs_device_id_${userId}`;
+        const codeKey = `pgpcs_device_code_${userId}`;
+
+        const cachedId = localStorage.getItem(idKey);
+        if (cachedId) {
+          // Don't just trust a cached device_id blindly - if the
+          // database was reset/reseeded (common in dev/testing) or an
+          // admin deleted this device, the cached ID now points at
+          // nothing. Verify it still exists; if not, clear the stale
+          // cache and fall through to re-registering fresh below,
+          // rather than returning an ID that will just fail on the
+          // next scan with no way to recover without manually
+          // clearing localStorage.
+          try {
+            const checkResponse = await fetch(
+              `${API_BASE_URL}/devices/${cachedId}`,
+              { method: "GET", headers: authHeaders() }
+            );
+            if (checkResponse.ok) {
+              return { ok: true, deviceId: Number(cachedId) };
+            }
+            // 404 (or anything else not-ok) - stale, clear and
+            // re-register below.
+            localStorage.removeItem(idKey);
+            localStorage.removeItem(codeKey);
+          } catch (error) {
+            // Network hiccup checking - don't discard a possibly-valid
+            // cached ID just because the verification call failed.
+            console.error("Verify cached device error:", error);
+            return { ok: true, deviceId: Number(cachedId) };
+          }
+        }
+
+        let deviceCode = localStorage.getItem(codeKey);
+        if (!deviceCode) {
+          deviceCode =
+            typeof crypto !== "undefined" && crypto.randomUUID
+              ? crypto.randomUUID()
+              : `dev-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+          localStorage.setItem(codeKey, deviceCode);
+        }
+
+        try {
+          const response = await fetch(`${API_BASE_URL}/devices`, {
+            method: "POST",
+            headers: authHeaders(),
+            body: JSON.stringify({
+              device_code: deviceCode,
+              device_name: state.webSession?.name
+                ? `${state.webSession.name}'s device`
+                : "Officer device",
+              assigned_to_user_id: userId,
+            }),
+          });
+
+          const result = await parseResponse(response);
+
+          if (!response.ok) {
+            return {
+              ok: false,
+              error: result.error || result.message || "Unable to register device.",
+            };
+          }
+
+          localStorage.setItem(idKey, String(result.device_id));
+          return { ok: true, deviceId: result.device_id };
+        } catch (error) {
+          console.error("Register device error:", error);
+          return { ok: false, error: "Unable to connect to Devices API." };
+        }
+      },
+
+      /* ===================================================
+         SCANS
+      =================================================== */
+
+      loadScans: async (params = {}) => {
+        if (!token) {
+          return { ok: false, error: "Authentication token is missing." };
+        }
+
+        try {
+          const searchParams = new URLSearchParams();
+          if (params.post_id !== undefined) {
+            searchParams.set("post_id", String(params.post_id));
+          }
+          if (params.round_instance_id !== undefined) {
+            searchParams.set(
+              "round_instance_id",
+              String(params.round_instance_id)
+            );
+          }
+          if (params.status) {
+            searchParams.set("status", params.status);
+          }
+          if (params.page !== undefined) {
+            searchParams.set("page", String(params.page));
+          }
+          if (params.page_size !== undefined) {
+            searchParams.set("page_size", String(params.page_size));
+          }
+          const query = searchParams.toString();
+
+          const response = await fetch(
+            `${API_BASE_URL}/scans${query ? `?${query}` : ""}`,
+            { method: "GET", headers: authHeaders() }
+          );
+
+          const data = await parseResponse(response);
+
+          if (!response.ok) {
+            return {
+              ok: false,
+              error: data.error || data.message || "Unable to load scans.",
+            };
+          }
+
+          const items = (Array.isArray(data.items) ? data.items : []).map(
+            (s) => ({ ...s, id: s.scan_id })
+          );
+
+          return {
+            ok: true,
+            items,
+            total: data.total ?? items.length,
+            page: data.page ?? 1,
+            pageSize: data.page_size ?? items.length,
+          };
+        } catch (error) {
+          console.error("Load scans error:", error);
+          return { ok: false, error: "Unable to connect to Scans API." };
+        }
+      },
+
+      /* ===================================================
+         EXCEPTIONS
+      =================================================== */
+
+      loadExceptions: async (params = {}) => {
+        if (!token) {
+          return { ok: false, error: "Authentication token is missing." };
+        }
+
+        try {
+          const searchParams = new URLSearchParams();
+          if (params.round_instance_id !== undefined) {
+            searchParams.set(
+              "round_instance_id",
+              String(params.round_instance_id)
+            );
+          }
+          if (params.round_date) {
+            searchParams.set("round_date", params.round_date);
+          }
+          if (params.exception_type) {
+            searchParams.set("exception_type", params.exception_type);
+          }
+          if (params.notified !== undefined) {
+            searchParams.set("notified", String(params.notified));
+          }
+          if (params.page !== undefined) {
+            searchParams.set("page", String(params.page));
+          }
+          if (params.page_size !== undefined) {
+            searchParams.set("page_size", String(params.page_size));
+          }
+          const query = searchParams.toString();
+
+          const response = await fetch(
+            `${API_BASE_URL}/exceptions${query ? `?${query}` : ""}`,
+            { method: "GET", headers: authHeaders() }
+          );
+
+          const data = await parseResponse(response);
+
+          if (!response.ok) {
+            return {
+              ok: false,
+              error: data.error || data.message || "Unable to load exceptions.",
+            };
+          }
+
+          const items = (Array.isArray(data.items) ? data.items : []).map(
+            (e) => ({ ...e, id: e.exception_id })
+          );
+
+          return {
+            ok: true,
+            items,
+            total: data.total ?? items.length,
+            page: data.page ?? 1,
+            pageSize: data.page_size ?? items.length,
+          };
+        } catch (error) {
+          console.error("Load exceptions error:", error);
+          return { ok: false, error: "Unable to connect to Exceptions API." };
+        }
+      },
+
+      /* ===================================================
+         REPORTS
+         ---------------------------------------------------
+         reports_bp is registered under /api/reports (not
+         /api/v1/... or the plain /api/... every other blueprint
+         uses) - see reports.py.
+      =================================================== */
+
+      loadReport: async (reportType, params = {}) => {
+        if (!token) {
+          return { ok: false, error: "Authentication token is missing." };
+        }
+
+        try {
+          const searchParams = new URLSearchParams();
+          Object.entries(params).forEach(([key, value]) => {
+            if (value !== undefined && value !== null && value !== "") {
+              searchParams.set(key, String(value));
+            }
+          });
+          const query = searchParams.toString();
+
+          const response = await fetch(
+            `${API_BASE_URL}/reports/${reportType}${query ? `?${query}` : ""}`,
+            { method: "GET", headers: authHeaders() }
+          );
+
+          const data = await parseResponse(response);
+
+          if (!response.ok) {
+            return {
+              ok: false,
+              error: data.error || data.message || "Unable to load report.",
+            };
+          }
+
+          return { ok: true, data };
+        } catch (error) {
+          console.error("Load report error:", error);
+          return { ok: false, error: "Unable to connect to Reports API." };
+        }
+      },
+
+      createScan: async (data = {}) => {
+        if (!token) {
+          return { ok: false, error: "Authentication token is missing." };
+        }
+
+        const payload = {
+          round_instance_id: data.round_instance_id,
+          qr_value: data.qr_value,
+          device_id: data.device_id,
+        };
+        // post_id is optional - the backend resolves it from qr_value
+        // when omitted.
+        if (data.post_id !== undefined) {
+          payload.post_id = data.post_id;
+        }
+        if (data.gps_lat !== undefined) payload.gps_lat = data.gps_lat;
+        if (data.gps_lng !== undefined) payload.gps_lng = data.gps_lng;
+
+        if (!payload.round_instance_id || !payload.qr_value || !payload.device_id) {
+          return {
+            ok: false,
+            error: "round_instance_id, qr_value and device_id are required.",
+          };
+        }
+
+        try {
+          const response = await fetch(`${API_BASE_URL}/scans`, {
+            method: "POST",
+            headers: authHeaders(),
+            body: JSON.stringify(payload),
+          });
+
+          const result = await parseResponse(response);
+
+          if (!response.ok) {
+            return {
+              ok: false,
+              error: result.error || result.message || "Unable to submit scan.",
+            };
+          }
+
+          return { ok: true, scan: result };
+        } catch (error) {
+          console.error("Create scan error:", error);
+          return { ok: false, error: "Unable to connect to Scans API." };
         }
       },
 

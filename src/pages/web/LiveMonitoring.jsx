@@ -1,9 +1,18 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import WebLayout from "../../components/web/WebLayout";
-import { Card, PillButton, Select, TextInput } from "../../components/web/FormField";
+import { Card } from "../../components/web/FormField";
 import Badge, { statusTone, statusLabel } from "../../components/web/Badge";
-import { useData, usePostMap, useOfficerMap } from "../../context/DataContext";
-import { formatDuration, formatShortTime, minutesBetween } from "../../lib/utils";
+import { useData } from "../../context/DataContext";
+import { formatDuration, formatShortTime } from "../../lib/utils";
+
+const POLL_INTERVAL_MS = 15000;
+
+function todayISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate()
+  ).padStart(2, "0")}`;
+}
 
 function StepCircle({ status }) {
   const styles = {
@@ -13,143 +22,280 @@ function StepCircle({ status }) {
     current: "bg-accent text-white ring-4 ring-[#D9F0F6]",
     pending: "bg-[#CBD3DB] text-[#7A8794]",
   };
-  return <div className={`flex h-9 w-9 items-center justify-center rounded-full text-[13px] font-extrabold ${styles[status]}`} />;
+  return (
+    <div
+      className={`flex h-9 w-9 items-center justify-center rounded-full text-[13px] font-extrabold ${styles[status]}`}
+    />
+  );
+}
+
+// statusTone/statusLabel expect lowercase-ish keys ("on_time", "late",
+// "out_of_sequence") - the backend sends the uppercase ScanStatus enum
+// value, so normalize before using them (see AuditTrail.jsx, same fix).
+function scanStatusKey(status) {
+  return String(status || "").toLowerCase();
 }
 
 export default function LiveMonitoring() {
-  const { rounds, sessions, actions } = useData();
-  const postMap = usePostMap();
-  const officerMap = useOfficerMap();
-  const [, setTick] = useState(0);
-  const [roundId, setRoundId] = useState(rounds[0]?.id || "");
-  const [officerId, setOfficerId] = useState(rounds[0]?.officerIds[0] || "");
-  const [selectedSessionId, setSelectedSessionId] = useState(null);
-  const [scanPostId, setScanPostId] = useState("");
-  const [remark, setRemark] = useState("");
-  const [notice, setNotice] = useState(null);
+  const { webSession, roundInstances, routes, routePosts, posts, officers, actions } =
+    useData();
 
+  const [selectedInstanceId, setSelectedInstanceId] = useState(null);
+  const [scansForRound, setScansForRound] = useState([]);
+  const [schedulesById, setSchedulesById] = useState({});
+
+  const today = todayISO();
+
+  const todayRounds = roundInstances.filter((ri) => ri.round_date === today);
+  const twoHoursFromNow = new Date(Date.now() + 2 * 60 * 60 * 1000);
+  const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  const upcomingRounds = todayRounds.filter((ri) => {
+    if (ri.status !== "PENDING") return false;
+    // Bounded window: starting soon, or overdue by at most 2 hours -
+    // NOT an unbounded look-back. A round stuck open for days
+    // shouldn't linger here forever; that belongs on the admin's
+    // manual Close Round workflow instead (Round Instances page).
+    const scheduledAt = new Date(ri.scheduled_start_time);
+    return scheduledAt >= twoHoursAgo && scheduledAt <= twoHoursFromNow;
+  });
+  const inProgressRounds = todayRounds.filter(
+    (ri) => ri.status === "IN_PROGRESS"
+  );
+
+  const selected = todayRounds.find(
+    (ri) => Number(ri.id) === Number(selectedInstanceId)
+  );
+
+  // Static reference data, loaded once.
   useEffect(() => {
-    const t = setInterval(() => setTick((n) => n + 1), 1000);
-    return () => clearInterval(t);
-  }, []);
+    if (!webSession?.accessToken) return;
+    actions.loadOfficers();
+    actions.loadRoutes();
+    actions.loadPosts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [webSession?.accessToken]);
 
-  const activeSessions = sessions.filter((s) => s.status === "in_progress");
-  const selected = activeSessions.find((s) => s.id === selectedSessionId) || activeSessions[0] || null;
-  const selectedRound = selected ? rounds.find((r) => r.id === selected.roundId) : null;
-
+  // The in-progress rounds list - this IS the "live" part, polled every
+  // 15s so admins see new rounds starting / existing ones progressing
+  // without manually refreshing.
   useEffect(() => {
-    if (selectedRound && !scanPostId) setScanPostId(selectedRound.routePostIds[selected.currentIndex] || "");
-  }, [selected?.currentIndex, selectedRound]);
+    if (!webSession?.accessToken) return;
 
-  function handleStart() {
-    const result = actions.startSession(roundId, officerId);
-    if (result.ok) {
-      setSelectedSessionId(result.session.id);
-      setNotice({ tone: "green", text: `${rounds.find((r) => r.id === roundId)?.name} started for ${officerMap[officerId]?.name}.` });
+    function refresh() {
+      actions.loadRoundInstances({ round_date: today });
     }
-  }
+    refresh();
+    const interval = setInterval(refresh, POLL_INTERVAL_MS);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [webSession?.accessToken, today]);
 
-  function handleRecordScan() {
-    if (!selected) return;
-    const result = actions.recordScan(selected.id, scanPostId, remark);
-    if (!result.ok) {
-      setNotice({ tone: "red", text: result.error });
+  // Route posts (for the step sequence) + real scans for whichever
+  // round is selected, also polled while it's open.
+  useEffect(() => {
+    if (!webSession?.accessToken || !selected) {
+      setScansForRound([]);
       return;
     }
-    setRemark("");
-    setScanPostId(selectedRound.routePostIds[selected.currentIndex + 1] || "");
-    if (result.alert) {
-      setNotice({ tone: statusTone(result.alert.type) === "red" ? "red" : "amber", text: `${statusLabel(result.alert.type)} recorded at ${postMap[scanPostId]?.name}.` });
-    } else {
-      setNotice({ tone: "green", text: `${postMap[scanPostId]?.name} checked on time.` });
+
+    function refresh() {
+      actions.loadRoutePosts(selected.route_id);
+      actions
+        .loadScans({ round_instance_id: selected.id, page_size: 100 })
+        .then((result) => {
+          if (result?.ok) setScansForRound(result.items);
+        });
     }
-    if (result.isLastStop) {
-      setNotice({ tone: "blue", text: `That was the final stop — use "Finish Round" to close it out.` });
-    }
+    refresh();
+    const interval = setInterval(refresh, POLL_INTERVAL_MS);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [webSession?.accessToken, selected?.id, selected?.route_id]);
+
+  // round_no/scheduled_time for the header - not carried on
+  // RoundInstance itself, see ScanNow.jsx for the same pattern. Fetches
+  // for every round shown in the picker, not just the selected one -
+  // describeRound() is called for all of them, so only fetching the
+  // selected round's schedule left every other round stuck showing
+  // "loading..." forever.
+  useEffect(() => {
+    if (!webSession?.accessToken) return;
+
+    const missingIds = [
+      ...new Set(
+        [...upcomingRounds, ...inProgressRounds]
+          .map((ri) => ri.schedule_id)
+          .filter((id) => id != null && !schedulesById[id])
+      ),
+    ];
+    if (missingIds.length === 0) return;
+
+    let cancelled = false;
+    Promise.all(missingIds.map((id) => actions.getRoundSchedule(id))).then(
+      (results) => {
+        if (cancelled) return;
+        setSchedulesById((prev) => {
+          const next = { ...prev };
+          results.forEach((result) => {
+            if (result?.ok && result.schedule) {
+              next[result.schedule.schedule_id] = result.schedule;
+            }
+          });
+          return next;
+        });
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [webSession?.accessToken, upcomingRounds, inProgressRounds]);
+
+  function officerName(officerId) {
+    const officer = officers.find((o) => Number(o.id) === Number(officerId));
+    return officer?.name || `Officer #${officerId}`;
   }
 
-  function handleFinish() {
-    if (!selected) return;
-    const result = actions.completeSession(selected.id);
-    setNotice({ tone: result.missedCount > 0 ? "red" : "green", text: `Round completed. ${result.missedCount} post(s) never scanned were logged as missed.` });
-    setSelectedSessionId(null);
+  function postName(postId) {
+    const post = posts.find((p) => Number(p.backendId) === Number(postId));
+    return post?.name || `Post #${postId}`;
   }
+
+  function routeName(routeId) {
+    const route = routes.find((r) => Number(r.id) === Number(routeId));
+    return route?.name || `Route #${routeId}`;
+  }
+
+  function describeRound(ri) {
+    const schedule = schedulesById[ri.schedule_id];
+    const route = routeName(ri.route_id);
+    if (!schedule) return `${route} — loading...`;
+    return `${route} — Round ${schedule.round_no}`;
+  }
+
+  const routePostsForSelected = routePosts
+    .filter((rp) => Number(rp.route_id) === Number(selected?.route_id))
+    .sort((a, b) => a.sequence_no - b.sequence_no);
+
+  // Which post is "current" (next expected) - same definition the
+  // backend's sequence check uses: the lowest sequence_no not yet
+  // scanned.
+  const scannedPostIds = new Set(scansForRound.map((s) => Number(s.post_id)));
+  const nextExpectedSeq = routePostsForSelected.find(
+    (rp) => !scannedPostIds.has(Number(rp.post_id))
+  )?.sequence_no;
+
+  const steps = routePostsForSelected.map((rp) => {
+    const scan = scansForRound.find(
+      (s) => Number(s.post_id) === Number(rp.post_id)
+    );
+    let status = "pending";
+    if (scan) {
+      status = scan.status === "ON_TIME" ? "done" : scanStatusKey(scan.status);
+    } else if (rp.sequence_no === nextExpectedSeq) {
+      status = "current";
+    }
+    return { ...rp, status, scan };
+  });
 
   return (
-    <WebLayout crumb="Monitoring / Live" title="Live Round Monitoring" requiredModule="Dashboard & Live Monitoring">
-      <Card title="Start a Round" subtitle="Simulates the handheld app beginning a checking round">
-        <div className="grid grid-cols-3 gap-3.5">
-          <div>
-            <label className="mb-1.5 block text-[11.5px] font-bold text-navy">Round</label>
-            <Select value={roundId} onChange={(e) => { setRoundId(e.target.value); setOfficerId(rounds.find((r) => r.id === e.target.value)?.officerIds[0] || ""); }}>
-              {rounds.map((r) => (
-                <option key={r.id} value={r.id}>{r.name}</option>
-              ))}
-            </Select>
-          </div>
-          <div>
-            <label className="mb-1.5 block text-[11.5px] font-bold text-navy">Officer</label>
-            <Select value={officerId} onChange={(e) => setOfficerId(e.target.value)}>
-              {Object.values(officerMap).map((o) => (
-                <option key={o.id} value={o.id}>{o.name} ({o.id})</option>
-              ))}
-            </Select>
-          </div>
-          <div className="flex items-end">
-            <PillButton tone="accent" onClick={handleStart} className="w-full justify-center">Start Round</PillButton>
-          </div>
-        </div>
-      </Card>
-
-      {notice && (
-        <div className={`mb-4 rounded-lg px-3.5 py-2.5 text-[12px] font-semibold ${
-          { green: "bg-status-greenBg text-status-green", amber: "bg-status-amberBg text-[#9C6A0C]", red: "bg-status-redBg text-status-red", blue: "bg-[#E4F1F8] text-accent-dark" }[notice.tone]
-        }`}>
-          {notice.text}
-        </div>
-      )}
-
-      {activeSessions.length === 0 ? (
+    <WebLayout
+      crumb="Monitoring / Live"
+      title="Live Round Monitoring"
+      requiredModule="Dashboard & Live Monitoring"
+    >
+      {upcomingRounds.length === 0 && inProgressRounds.length === 0 ? (
         <Card>
-          <div className="py-10 text-center text-[12.5px] text-inkSoft">No round is currently active. Start one above.</div>
+          <div className="py-10 text-center text-[12.5px] text-inkSoft">
+            No rounds upcoming or in progress today.
+          </div>
         </Card>
       ) : (
         <>
-          <Card title="In-Progress Rounds" subtitle="Select one to view its live sequence">
-            <div className="flex flex-wrap gap-2">
-              {activeSessions.map((s) => {
-                const r = rounds.find((rr) => rr.id === s.roundId);
-                return (
+          {upcomingRounds.length > 0 && (
+            <Card
+              title="Upcoming Rounds"
+              subtitle="Starting within 2 hours, or overdue by up to 2 hours"
+            >
+              <div className="flex flex-wrap gap-2">
+                {upcomingRounds.map((ri) => {
+                  const isOverdue = new Date(ri.scheduled_start_time) < new Date();
+                  return (
+                    <button
+                      key={ri.id}
+                      onClick={() => setSelectedInstanceId(ri.id)}
+                      className={`rounded-lg border px-3.5 py-2 text-left text-[12px] ${
+                        Number(selectedInstanceId) === Number(ri.id)
+                          ? "border-accent bg-[#E4F1F8]"
+                          : isOverdue
+                          ? "border-status-red bg-status-redBg"
+                          : "border-border bg-white hover:bg-status-grayBg"
+                      }`}
+                    >
+                      <div className="font-bold text-navy">{describeRound(ri)}</div>
+                      <div
+                        className={isOverdue ? "text-status-red" : "text-inkSoft"}
+                      >
+                        {officerName(ri.officer_id)} ·{" "}
+                        {isOverdue ? "overdue since" : "scheduled"}{" "}
+                        {formatShortTime(ri.scheduled_start_time)}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </Card>
+          )}
+
+          {inProgressRounds.length > 0 && (
+            <Card
+              title="In-Progress Rounds"
+              subtitle="Select one to view its live sequence - refreshes every 15s"
+            >
+              <div className="flex flex-wrap gap-2">
+                {inProgressRounds.map((ri) => (
                   <button
-                    key={s.id}
-                    onClick={() => { setSelectedSessionId(s.id); setScanPostId(""); }}
-                    className={`rounded-lg border px-3.5 py-2 text-left text-[12px] ${selected?.id === s.id ? "border-accent bg-[#E4F1F8]" : "border-border bg-white hover:bg-status-grayBg"}`}
+                    key={ri.id}
+                    onClick={() => setSelectedInstanceId(ri.id)}
+                    className={`rounded-lg border px-3.5 py-2 text-left text-[12px] ${
+                      Number(selectedInstanceId) === Number(ri.id)
+                        ? "border-accent bg-[#E4F1F8]"
+                        : "border-border bg-white hover:bg-status-grayBg"
+                    }`}
                   >
-                    <div className="font-bold text-navy">{r.name}</div>
-                    <div className="text-inkSoft">{officerMap[s.officerId]?.name} · {s.scans.length}/{r.routePostIds.length} posts</div>
+                    <div className="font-bold text-navy">{describeRound(ri)}</div>
+                    <div className="text-inkSoft">
+                      {officerName(ri.officer_id)} · {ri.scanned_posts_count ?? 0}/
+                      {ri.required_posts_count ?? "?"} posts
+                    </div>
                   </button>
-                );
-              })}
+              ))}
             </div>
           </Card>
+          )}
 
-          {selected && selectedRound && (
+          {selected && (
             <>
               <Card title="Route Sequence & Status">
                 <div className="flex gap-6 overflow-x-auto pb-2">
-                  {selectedRound.routePostIds.map((postId, idx) => {
-                    const scan = selected.scans[idx];
-                    let status = "pending";
-                    if (scan) status = scan.status === "on_time" ? "done" : scan.status;
-                    else if (idx === selected.currentIndex) status = "current";
-                    return (
-                      <div key={idx} className="flex min-w-[92px] flex-col items-center">
-                        <StepCircle status={status} />
-                        <div className="mt-2 text-center text-[10.5px] font-bold text-navy">{postMap[postId]?.name}</div>
-                        <div className="num text-center text-[10px] text-inkSoft">{scan ? formatShortTime(scan.actualTime) : idx === selected.currentIndex ? "Current" : "Pending"}</div>
+                  {steps.map((step) => (
+                    <div
+                      key={step.id}
+                      className="flex min-w-[92px] flex-col items-center"
+                    >
+                      <StepCircle status={step.status} />
+                      <div className="mt-2 text-center text-[10.5px] font-bold text-navy">
+                        {postName(step.post_id)}
                       </div>
-                    );
-                  })}
+                      <div className="num text-center text-[10px] text-inkSoft">
+                        {step.scan
+                          ? formatShortTime(step.scan.scan_timestamp)
+                          : step.status === "current"
+                          ? "Current"
+                          : "Pending"}
+                      </div>
+                    </div>
+                  ))}
                 </div>
                 <div className="mt-2 flex gap-5 text-[11.5px] text-inkSoft">
                   <Badge tone="green">Checked</Badge>
@@ -164,56 +310,81 @@ export default function LiveMonitoring() {
                 <Card title="Round Detail">
                   <table className="w-full text-[12.5px]">
                     <tbody>
-                      <tr><td className="py-1.5 text-inkSoft">Officer</td><td className="py-1.5 font-bold text-navy">{officerMap[selected.officerId]?.name}</td></tr>
-                      <tr><td className="py-1.5 text-inkSoft">Round Start</td><td className="num py-1.5">{formatShortTime(selected.startedAt)}</td></tr>
-                      <tr><td className="py-1.5 text-inkSoft">Elapsed</td><td className="num py-1.5">{formatDuration(Date.now() - new Date(selected.startedAt).getTime())}</td></tr>
-                      <tr><td className="py-1.5 text-inkSoft">Progress</td><td className="num py-1.5">{selected.scans.length} / {selectedRound.routePostIds.length} posts</td></tr>
+                      <tr>
+                        <td className="py-1.5 text-inkSoft">Officer</td>
+                        <td className="py-1.5 font-bold text-navy">
+                          {officerName(selected.officer_id)}
+                        </td>
+                      </tr>
+                      <tr>
+                        <td className="py-1.5 text-inkSoft">Scheduled Start</td>
+                        <td className="num py-1.5">
+                          {formatShortTime(selected.scheduled_start_time)}
+                        </td>
+                      </tr>
+                      <tr>
+                        <td className="py-1.5 text-inkSoft">Actual Start</td>
+                        <td className="num py-1.5">
+                          {selected.actual_start_time
+                            ? formatShortTime(selected.actual_start_time)
+                            : "—"}
+                        </td>
+                      </tr>
+                      <tr>
+                        <td className="py-1.5 text-inkSoft">Elapsed</td>
+                        <td className="num py-1.5">
+                          {selected.actual_start_time
+                            ? formatDuration(
+                                Date.now() -
+                                  new Date(selected.actual_start_time).getTime()
+                              )
+                            : "—"}
+                        </td>
+                      </tr>
+                      <tr>
+                        <td className="py-1.5 text-inkSoft">Progress</td>
+                        <td className="num py-1.5">
+                          {selected.scanned_posts_count ?? 0} /{" "}
+                          {selected.required_posts_count ?? "?"} posts
+                        </td>
+                      </tr>
                     </tbody>
                   </table>
-
-                  {selected.currentIndex < selectedRound.routePostIds.length ? (
-                    <div className="mt-4 border-t border-border pt-4">
-                      <label className="mb-1.5 block text-[11.5px] font-bold text-navy">Record Scan For Post</label>
-                      <Select value={scanPostId} onChange={(e) => setScanPostId(e.target.value)} className="mb-2.5">
-                        {Object.values(postMap).map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.name} {p.id === selectedRound.routePostIds[selected.currentIndex] ? "(expected next)" : ""}
-                          </option>
-                        ))}
-                      </Select>
-                      <TextInput placeholder="Optional remark (e.g. Light not working)" value={remark} onChange={(e) => setRemark(e.target.value)} className="mb-2.5" />
-                      <div className="flex gap-2">
-                        <PillButton tone="accent" onClick={handleRecordScan}>Record Scan</PillButton>
-                        <PillButton tone="ghost" onClick={handleFinish}>Finish Round Now</PillButton>
-                      </div>
-                      <p className="mt-2 text-[10.5px] text-inkSoft">
-                        Choosing a post other than the expected one simulates an out-of-sequence scan; scanning after the round's
-                        late threshold simulates a delayed check.
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="mt-4 border-t border-border pt-4">
-                      <PillButton tone="accent" onClick={handleFinish}>Finish Round</PillButton>
-                    </div>
-                  )}
                 </Card>
 
                 <Card title="Live Scan Feed">
-                  {selected.scans.length === 0 ? (
-                    <div className="py-8 text-center text-[12px] text-inkSoft">No scans recorded yet.</div>
+                  {scansForRound.length === 0 ? (
+                    <div className="py-8 text-center text-[12px] text-inkSoft">
+                      No scans recorded yet.
+                    </div>
                   ) : (
-                    [...selected.scans].reverse().map((scan, i) => (
-                      <div key={i} className="flex items-center justify-between border-b border-[#EFF2F5] py-2 last:border-0">
-                        <div>
-                          <div className="text-[12.5px] font-bold text-navy">{postMap[scan.postId]?.name}</div>
-                          <div className="text-[11px] text-inkSoft">
-                            Scheduled {formatShortTime(scan.scheduledTime)} · Actual {formatShortTime(scan.actualTime)}
-                            {scan.status === "late" && ` · ${minutesBetween(scan.scheduledTime, scan.actualTime)} min late`}
+                    [...scansForRound]
+                      .sort(
+                        (a, b) =>
+                          new Date(b.scan_timestamp) - new Date(a.scan_timestamp)
+                      )
+                      .map((scan) => (
+                        <div
+                          key={scan.id}
+                          className="flex items-center justify-between border-b border-[#EFF2F5] py-2 last:border-0"
+                        >
+                          <div>
+                            <div className="text-[12.5px] font-bold text-navy">
+                              {postName(scan.post_id)}
+                            </div>
+                            <div className="text-[11px] text-inkSoft">
+                              Scheduled {formatShortTime(scan.scheduled_time)} ·
+                              Actual {formatShortTime(scan.scan_timestamp)}
+                              {scan.status === "LATE" &&
+                                scan.delay_minutes != null &&
+                                ` · ${scan.delay_minutes} min late`}
+                            </div>
                           </div>
+                          <Badge tone={statusTone(scanStatusKey(scan.status))}>
+                            {statusLabel(scanStatusKey(scan.status))}
+                          </Badge>
                         </div>
-                        <Badge tone={statusTone(scan.status)}>{statusLabel(scan.status)}</Badge>
-                      </div>
-                    ))
+                      ))
                   )}
                 </Card>
               </div>

@@ -19,10 +19,8 @@ const MODULE_ROUTES = [
   { module: "Round & Route Management", path: "/web/round-schedules" },
   { module: "Round & Route Management", path: "/web/round-instances" },
   { module: "Shift Management", path: "/web/shifts" },
-  { module: "Alerts & Exceptions", path: "/web/alerts" },
   { module: "Reports & Audit Trail", path: "/web/reports" },
   { module: "User & Role Management", path: "/web/roles" },
-  { module: "Settings", path: "/web/settings" },
 ];
 
 // Wraps every /web/* screen: enforces login, renders the shared chrome, and
@@ -34,16 +32,19 @@ export default function WebLayout({ crumb, title, right, requiredModule, childre
 
   if (!webSession) return <Navigate to="/web/login" replace />;
 
-  // TEMPORARY: Supervisor gets the same full-access bypass as
-  // Administrator. permissions is never actually seeded for any
-  // non-Administrator role today (the only seeding effect, in
-  // UserRoles.jsx, only writes "Administrator" and only when an admin
-  // visits that page) - so without this, Supervisor always lands on
-  // "No modules available". Remove this bypass once permissions are
-  // properly granted via User Roles & Access Control (or seeded some
-  // other reliable way) instead of bypassed here.
+  // TEMPORARY: Checking Officer and Supervisor both get the same
+  // full-access bypass as Administrator, for now. permissions is never
+  // actually seeded for any non-Administrator role today (the only
+  // seeding effect, in UserRoles.jsx, only writes "Administrator" and
+  // only when an admin visits that page) - so without this, every
+  // other role always lands on "No modules available". Remove this
+  // bypass once permissions are properly granted via User Roles &
+  // Access Control (or seeded some other reliable way) instead of
+  // bypassed here.
   const hasFullAccess =
-    webSession.role === "Administrator" || webSession.role === "Supervisor";
+    webSession.role === "Administrator" ||
+    webSession.role === "Supervisor" ||
+    webSession.role === "Checking Officer";
 
   const canView =
     hasFullAccess ||
@@ -69,6 +70,16 @@ export default function WebLayout({ crumb, title, right, requiredModule, childre
 
     if (fallback) {
       return <Navigate to={fallback.path} replace />;
+    }
+
+    // No module-based fallback exists for this role (e.g. a Checking
+    // Officer, who has no admin module access at all) - Scan Now
+    // doesn't go through the module-permission system, so it's always
+    // a valid destination for any authenticated user. Only fall
+    // through to the dead-end message below if we're not already
+    // there (avoids a redirect loop).
+    if (location.pathname !== "/web/scan") {
+      return <Navigate to="/web/scan" replace />;
     }
 
     // Edge case: this role has no view permission on ANY module at all.

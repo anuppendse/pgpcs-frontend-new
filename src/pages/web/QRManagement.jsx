@@ -176,9 +176,9 @@ export default function QRManagement() {
           <div ref={canvasWrapRef} className="mb-4 flex flex-col items-center rounded-lg border border-border bg-status-grayBg py-6">
             {selected?.qrGenerated ? (
               <>
-                <QRCodeCanvas value={selected.id} size={150} level="M" includeMargin bgColor="#ffffff" fgColor="#0F2540" />
+                <QRCodeCanvas value={selected.qrCodeId} size={150} level="M" includeMargin bgColor="#ffffff" fgColor="#0F2540" />
                 <div className="mt-2 text-[11px] font-semibold text-inkSoft">{displayLabel}</div>
-                <div className="text-[10px] text-inkSoft">Encodes Post ID: {selected.id} (scan with the handheld app)</div>
+                <div className="text-[10px] text-inkSoft">Encodes QR Value: {selected.qrCodeId} (scan with the handheld app)</div>
               </>
             ) : (
               <div className="px-6 text-center text-[12px] text-inkSoft">No QR generated yet for this post.</div>
