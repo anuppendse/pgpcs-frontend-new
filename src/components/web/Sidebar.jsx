@@ -5,7 +5,6 @@ import {
   Radar,
   ShieldCheck,
   QrCode,
-  Users,
   Route,
   Clock,
   BarChart3,
@@ -23,7 +22,6 @@ const NAV = [
   { to: "/web/monitoring", label: "Live Round Monitoring", icon: Radar, module: "Dashboard & Live Monitoring", section: "Monitoring" },
   { to: "/web/posts", label: "Guard Post Management", icon: ShieldCheck, module: "Guard Post Management", section: "Configuration" },
   { to: "/web/qr", label: "QR Code Management", icon: QrCode, module: "QR Code Management", section: "Configuration" },
-  { to: "/web/officers", label: "Officer Management", icon: Users, module: "Officer Management", section: "Configuration" },
   { to: "/web/routes", label: "Routes", icon: Route, module: "Round & Route Management", section: "Configuration" },
   { to: "/web/round-schedules", label: "Round Schedules", icon: Route, module: "Round & Route Management", section: "Configuration" },
   { to: "/web/round-instances", label: "Round Instances", icon: Route, module: "Round & Route Management", section: "Configuration" },
@@ -33,14 +31,29 @@ const NAV = [
   { to: "/web/roles", label: "User Roles & Access", icon: UserCog, module: "User & Role Management", section: "Reporting" },
 ];
 
+// Roles that should never see the "Scan Now" nav item in the sidebar,
+// regardless of the module-permission table (Scan Now doesn't go through
+// that system at all - see WebLayout.jsx - so it has to be hidden here
+// explicitly, by role, rather than via canViewModule/perms).
+const SCAN_NOW_HIDDEN_FOR = ["administrator", "supervisor"];
+
 export default function Sidebar() {
   const { webSession, permissions, actions } = useData();
   const navigate = useNavigate();
   const perms = permissions[webSession?.role] || {};
-  const visible = NAV.filter(
-    (item) =>
+
+  // Same normalization pattern used elsewhere (trim + lowercase) so this
+  // is robust regardless of exact casing/whitespace coming from the API.
+  const normalizedRole = String(webSession?.role || "").trim().toLowerCase();
+  const scanNowHidden = SCAN_NOW_HIDDEN_FOR.includes(normalizedRole);
+
+  const visible = NAV.filter((item) => {
+    if (item.to === "/web/scan" && scanNowHidden) return false;
+
+    return (
       canViewModule(webSession?.role, item.module) || perms[item.module]?.view
-  );
+    );
+  });
 
   let lastSection = null;
 

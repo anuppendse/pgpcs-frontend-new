@@ -11,28 +11,41 @@
 // share the same visibility, even though their edit rules differ
 // page-by-page (see each page's own canEdit).
 export const ROLE_MODULES = {
+  // Administrator and Supervisor deliberately do NOT include "Scan Now" -
+  // that's Checking Officer's page. This isn't just a sidebar-visibility
+  // choice: leaving it out here is what makes WebLayout actually BLOCK
+  // Administrator/Supervisor from reaching /web/scan even by typing or
+  // pasting the URL directly, not just hide the nav link.
+  //
+  // "Officer Management" removed - confirmed no impact, since the
+  // Officers panel/route is gone, but DataContext's officers state
+  // and actions (loadOfficers/addOfficer/updateOfficer/resetPassword)
+  // are left untouched, since other modules (e.g. Shift/Route
+  // assignment dropdowns) still depend on that same data.
   Administrator: [
-    "Scan Now",
     "Dashboard & Live Monitoring",
     "Guard Post Management",
     "QR Code Management",
-    "Officer Management",
     "Round & Route Management",
     "Shift Management",
     "Reports & Audit Trail",
     "User & Role Management",
   ],
   Supervisor: [
-    "Scan Now",
     "Dashboard & Live Monitoring",
     "Guard Post Management",
     "QR Code Management",
     "Round & Route Management",
     "Shift Management",
     "Reports & Audit Trail",
-    // Deliberately NOT Officer Management or User & Role Management -
-    // account-level control and permission governance stay
-    // Administrator-only.
+    "User & Role Management",
+    // Supervisor still has view access to User & Role Management -
+    // confirmed by manager: Supervisor can create/edit/deactivate
+    // Checking Officer accounts (see canManageUsers/canManageRow in
+    // UserRoles.jsx, which enforce that narrower CHECKING-OFFICER-ONLY
+    // scope within the page itself). This module list only controls
+    // whether the tab/page is reachable at all, not what Supervisor
+    // can do once inside it.
   ],
   "Checking Officer": [
     "Scan Now",

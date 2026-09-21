@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { Eye, EyeOff } from "lucide-react";
 import WebLayout from "../../components/web/WebLayout";
 import {
   Card,
@@ -50,6 +51,19 @@ function formatRoleName(name) {
     .join(" ");
 }
 
+// Normalizes a role name for COMPARISON only (never for display/submit).
+// Strips case, whitespace and underscores so "Checking Officer",
+// "CHECKING_OFFICER" and "checking_officer" all compare equal - this
+// covers both the enum-style role_name coming from the roles API and the
+// human-readable role string on webSession/user rows, whichever format
+// each one happens to be in.
+function normalizeRoleKey(name) {
+  return String(name || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, "");
+}
+
 export default function UserRoles() {
   const { users, webSession, permissions, actions } = useData();
 
@@ -60,10 +74,18 @@ export default function UserRoles() {
   // became false, which disabled every permission checkbox
   // for every role. Normalizing this the same way makes it
   // robust regardless of exact casing/whitespace.
-  const isAdmin =
-    String(webSession?.role || "")
-      .trim()
-      .toLowerCase() === "administrator";
+  const isAdmin = normalizeRoleKey(webSession?.role) === normalizeRoleKey("Administrator");
+
+  // Supervisor gets the same kind of full-CRUD access as Administrator,
+  // but scoped to Checking Officer users only (see canManageRow / 
+  // creatableRoles below) - per manager's confirmation.
+  const isSupervisor = normalizeRoleKey(webSession?.role) === normalizeRoleKey("Supervisor");
+
+  // Anyone who can manage users at all (open Add User, load the roles
+  // list, etc). Admin can manage Supervisor+Officer, Supervisor can only
+  // manage Checking Officer - that narrower scope is enforced separately
+  // via creatableRoles/canManageRow, not here.
+  const canManageUsers = isAdmin || isSupervisor;
 
   const [role, setRole] = useState("Security Officer");
 
@@ -87,16 +109,34 @@ export default function UserRoles() {
   // (which is still used for the separate Role Permissions
   // selector further down, unrelated to this dropdown).
   //
-  // GET /api/v1/roles is Admin-only on the backend
-  // (@role_required(RoleName.ADMIN) in roles.py), so this is
-  // gated on isAdmin - a non-admin viewing this page in
-  // read-only mode never fires the request (and would get a
-  // 403 if it did).
+  // GET /api/v1/roles was previously Admin-only on the backend
+  // (@role_required(RoleName.ADMIN) in roles.py). Supervisor now also
+  // needs this list to create/edit Checking Officer users, so the
+  // backend route guard needs to allow Supervisor too (or expose an
+  // equivalent endpoint) - this fetch is gated on canManageUsers on the
+  // assumption that's been/will be updated backend-side to match.
   const [roles, setRoles] = useState([]);
   const [rolesLoading, setRolesLoading] = useState(false);
 
+  // The role(s) each viewer is allowed to assign when creating/editing a
+  // user, via the Add/Edit "Role" dropdowns:
+  //  - Administrator can assign Supervisor or Checking Officer, but
+  //    never Administrator - that role is reserved and can only exist
+  //    via whatever seeded it initially (e.g. DB seed / backend setup),
+  //    never through this UI.
+  //  - Supervisor can ONLY assign Checking Officer - they cannot create
+  //    or promote anyone to Supervisor or Administrator.
+  //  - Anyone else gets an empty list (shouldn't reach these dropdowns
+  //    at all, since canManageUsers gates the Add button and canManageRow
+  //    gates the Edit link).
+  const creatableRoles = isAdmin
+    ? roles.filter((r) => normalizeRoleKey(r.role_name) !== normalizeRoleKey("Administrator"))
+    : isSupervisor
+    ? roles.filter((r) => normalizeRoleKey(r.role_name) === normalizeRoleKey("Checking Officer"))
+    : [];
+
   useEffect(() => {
-    if (!webSession?.accessToken || !isAdmin) return;
+    if (!webSession?.accessToken || !canManageUsers) return;
 
     let cancelled = false;
     setRolesLoading(true);
@@ -124,7 +164,18 @@ export default function UserRoles() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [webSession?.accessToken, isAdmin]);
+  }, [webSession?.accessToken, canManageUsers]);
+
+  // A row-level check: can the CURRENT viewer manage THIS particular
+  // user row (open Edit, toggle Active/Inactive)?
+  //  - Administrator can manage anyone (including other Administrators,
+  //    though their role field stays locked - see editUserIsAdmin below).
+  //  - Supervisor can ONLY manage Checking Officer rows.
+  function canManageRow(u) {
+    if (isAdmin) return true;
+    if (isSupervisor) return normalizeRoleKey(u.role) === normalizeRoleKey("Checking Officer");
+    return false;
+  }
 
   // =========================================================
   // ADMINISTRATOR = ALWAYS FULL ACCESS
@@ -171,7 +222,7 @@ export default function UserRoles() {
   const [saving, setSaving] = useState(false);
 
   function openAdd() {
-    setForm({ ...emptyUserForm, role_id: roles[0]?.role_id ?? "" });
+    setForm({ ...emptyUserForm, role_id: creatableRoles[0]?.role_id ?? "" });
     setModalOpen(true);
   }
 
@@ -198,6 +249,21 @@ export default function UserRoles() {
 
     if (!form.role_id) {
       window.alert("Please select a role.");
+      return;
+    }
+
+    // Defense-in-depth: even though the dropdown already only offers
+    // creatableRoles, never trust the submitted role_id blindly - confirm
+    // it's actually one this viewer is allowed to assign.
+    const isAllowedRole = creatableRoles.some(
+      (r) => String(r.role_id) === String(form.role_id)
+    );
+    if (!isAllowedRole) {
+      window.alert(
+        isAdmin
+          ? "You are not allowed to create another Administrator."
+          : "You can only create Checking Officer accounts."
+      );
       return;
     }
 
@@ -267,10 +333,45 @@ export default function UserRoles() {
   const [editUserForm, setEditUserForm] = useState({ ...emptyUserForm });
   const [editUserSaving, setEditUserSaving] = useState(false);
 
+  // New password field - Administrator only.
+  // Leave blank to keep the existing password.
+  const [editNewPassword, setEditNewPassword] = useState("");
+
+  // If the user currently being edited is already an Administrator,
+  // their role_id won't exist in `creatableRoles` (Administrator is
+  // filtered out there on purpose). Rather than let the Select render
+  // with no matching option, we just lock the Role field entirely for
+  // existing Administrators - their role can't be changed via this UI.
+  const [editUserIsAdmin, setEditUserIsAdmin] = useState(false);
+
+  // Supervisor can only ever edit Checking Officer rows (canManageRow
+  // enforces that on the Edit link itself), so their Role field is
+  // always locked to Checking Officer too - there's nothing else for
+  // them to legitimately pick.
+  const editUserRoleLocked = editUserIsAdmin || (isSupervisor && !isAdmin);
+
+  // Supervisor's write access on the backend is scoped to
+  // full_name/phone/email only (see allowed_fields in users.py's
+  // update_user) - role_id and username are rejected with a 403 even
+  // if submitted. Locking Username here too (mirroring the Role field)
+  // keeps the UI honest about what will actually be saved, instead of
+  // showing an editable field that silently fails to persist.
+  const editUserUsernameLocked = isSupervisor && !isAdmin;
+
   function openEditUser(u) {
+    // Safety net: the Edit link is already hidden for rows this viewer
+    // can't manage, but don't let a stale click/keyboard action open the
+    // modal for a row outside the viewer's allowed scope either.
+    if (!canManageRow(u)) return;
+
     setEditingUserId(u.id);
 
     const matchedRole = roles.find((r) => r.role_name === u.role);
+    const isAdminUser =
+      String(matchedRole?.role_name || u.role || "").trim().toUpperCase() ===
+      "ADMINISTRATOR";
+
+    setEditUserIsAdmin(isAdminUser);
 
     setEditUserForm({
       employee_code: u.employeeCode || u.employee_code || "",
@@ -282,6 +383,8 @@ export default function UserRoles() {
       email: u.email || "",
     });
 
+    setEditNewPassword("");
+
     setEditUserModalOpen(true);
   }
 
@@ -289,7 +392,9 @@ export default function UserRoles() {
     if (editUserSaving) return;
     setEditUserModalOpen(false);
     setEditingUserId(null);
+    setEditUserIsAdmin(false);
     setEditUserForm({ ...emptyUserForm });
+    setEditNewPassword("");
   }
 
   async function handleEditUserSave(e) {
@@ -308,6 +413,25 @@ export default function UserRoles() {
       return;
     }
 
+    // Defense-in-depth: even though the dropdown already only offers
+    // creatableRoles, never trust the submitted role_id blindly. This
+    // does NOT apply when editUserIsAdmin is true - that's an existing
+    // Administrator whose role field is locked/unchanged, just being
+    // edited for other fields (name, username, contact info, etc).
+    if (!editUserIsAdmin) {
+      const isAllowedEditRole = creatableRoles.some(
+        (r) => String(r.role_id) === String(editUserForm.role_id)
+      );
+      if (!isAllowedEditRole) {
+        window.alert(
+          isAdmin
+            ? "You are not allowed to assign the Administrator role."
+            : "You can only manage Checking Officer accounts."
+        );
+        return;
+      }
+    }
+
     if (!isValidPhone(editUserForm.phone)) {
       window.alert("Phone number must be exactly 10 digits.");
       return;
@@ -318,25 +442,65 @@ export default function UserRoles() {
       return;
     }
 
+    // Password change is optional. Only the New Password field is used.
+    const wantsPasswordChange =
+      isAdmin && editNewPassword.trim();
+
+    if (wantsPasswordChange && editNewPassword.length < 8) {
+      window.alert("New password must be at least 8 characters.");
+      return;
+    }
+
     setEditUserSaving(true);
 
     try {
-      const result = await actions.updateUserApi(editingUserId, {
+      const payload = {
         full_name: editUserForm.full_name.trim(),
-        role_id: Number(editUserForm.role_id),
-        username: editUserForm.username.trim(),
         phone: editUserForm.phone || null,
         email: editUserForm.email || null,
-      });
+      };
+
+      // Supervisor's backend route rejects role_id/username outright
+      // (403) even if the values are unchanged, so those two keys must
+      // be omitted from the payload entirely for Supervisor - not just
+      // left disabled in the UI.
+      if (!(isSupervisor && !isAdmin)) {
+        payload.role_id = Number(editUserForm.role_id);
+        payload.username = editUserForm.username.trim();
+      }
+
+      const result = await actions.updateUserApi(editingUserId, payload);
 
       if (!result?.ok) {
         window.alert(result?.error || "Unable to update user.");
         return;
       }
 
+      if (wantsPasswordChange) {
+        const passwordResult = await actions.resetPassword(
+          editingUserId,
+          "",
+          editNewPassword
+        );
+
+        if (!passwordResult?.ok) {
+          window.alert(
+            passwordResult?.error || "Unable to reset password."
+          );
+          return;
+        }
+
+        window.alert(
+          `Password updated successfully for ${
+            editUserForm.username.trim()
+          }.`
+        );
+      }
+
       setEditUserModalOpen(false);
       setEditingUserId(null);
       setEditUserForm({ ...emptyUserForm });
+        setEditNewPassword("");
     } catch (error) {
       console.error("Update user error:", error);
       window.alert("Unable to connect to Users API.");
@@ -350,7 +514,7 @@ export default function UserRoles() {
   // =========================================================
 
   async function handleToggleStatus(u) {
-    if (!isAdmin) return;
+    if (!canManageRow(u)) return;
 
     const nextStatus = u.status === "Active" ? "inactive" : "active";
 
@@ -369,7 +533,7 @@ export default function UserRoles() {
       title="User Roles & Access Control"
       requiredModule="User & Role Management"
       right={
-        isAdmin && (
+        canManageUsers && (
           <PillButton tone="accent" onClick={openAdd}>
             + Add User
           </PillButton>
@@ -395,7 +559,7 @@ export default function UserRoles() {
                   <div className="flex items-center gap-2">
                     <Toggle
                       checked={u.status === "Active"}
-                      disabled={!isAdmin}
+                      disabled={!canManageRow(u)}
                       onChange={() => handleToggleStatus(u)}
                     />
                     <span className="text-[11px] text-inkSoft">
@@ -404,7 +568,7 @@ export default function UserRoles() {
                   </div>
                 </td>
                 <td className="border-b border-[#EFF2F5] py-2.5">
-                  {isAdmin && (
+                  {canManageRow(u) && (
                     <button
                       type="button"
                       onClick={() => openEditUser(u)}
@@ -426,83 +590,6 @@ export default function UserRoles() {
             )}
           </tbody>
         </table>
-      </Card>
-
-      <Card
-        title="Role Permissions"
-        subtitle={isAdmin ? "Toggle module-level access for each role" : "Read-only — Administrator access required to edit"}
-        right={
-          <Select value={role} onChange={(e) => setRole(e.target.value)} className="w-56">
-            {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
-          </Select>
-        }
-      >
-        <table className="w-full text-[12.5px]">
-          <thead>
-            <tr className="text-left text-[10.5px] uppercase tracking-wide text-inkSoft">
-              <th className="border-b border-border pb-2">Module</th>
-              <th className="border-b border-border pb-2 text-center">View</th>
-              <th className="border-b border-border pb-2 text-center">Edit</th>
-            </tr>
-          </thead>
-          <tbody>
-            {MODULES.map((m) => {
-              const rawPerm = permissions[role]?.[m] || {};
-
-              // Previously this was:
-              //   const perm = permissions[role]?.[m] || { view: false, edit: false };
-              // That fallback only kicks in when the WHOLE module entry is
-              // missing. UPDATE_PERMISSION only ever writes the single field
-              // you actually toggled, so a module you've only ever checked
-              // "View" for ends up stored as { view: true } with no "edit"
-              // key at all. Reading perm.edit then returns undefined, and
-              // React's checkbox goes from controlled (a real boolean) to
-              // uncontrolled (undefined) - hence the console warning.
-              // Coercing both fields with Boolean(...) guarantees they are
-              // always true/false, never undefined, regardless of how
-              // partial the stored object is.
-              const perm = {
-                view: Boolean(rawPerm.view),
-                edit: Boolean(rawPerm.edit),
-              };
-
-              // Previously: locked = role === "Administrator" || !isAdmin
-              // That hard-disabled every Administrator checkbox no matter
-              // what. Administrator's boxes are now just pre-ticked (see
-              // the seeding effect above) and left editable like any
-              // other role - the only real lock left is "you must be an
-              // admin viewer to edit anyone's permissions."
-              const locked = !isAdmin;
-
-              return (
-                <tr key={m}>
-                  <td className="border-b border-[#EFF2F5] py-2.5">{m}</td>
-                  <td className="border-b border-[#EFF2F5] py-2.5 text-center">
-                    <input
-                      type="checkbox"
-                      checked={perm.view}
-                      disabled={locked}
-                      onChange={(e) => actions.updatePermission(role, m, "view", e.target.checked)}
-                    />
-                  </td>
-                  <td className="border-b border-[#EFF2F5] py-2.5 text-center">
-                    <input
-                      type="checkbox"
-                      checked={perm.edit}
-                      disabled={locked || !perm.view}
-                      onChange={(e) => actions.updatePermission(role, m, "edit", e.target.checked)}
-                    />
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        {role === "Administrator" && (
-          <div className="mt-3 text-[11px] text-inkSoft">
-            Administrator has full access by default on the backend — these boxes are pre-checked to match that, but you can still adjust them here.
-          </div>
-        )}
       </Card>
 
       <Modal open={modalOpen} onClose={closeModal} title="Add User">
@@ -542,7 +629,7 @@ export default function UserRoles() {
                 <option value="" disabled>
                   {rolesLoading ? "Loading roles…" : "Select role"}
                 </option>
-                {roles.map((r) => (
+                {creatableRoles.map((r) => (
                   <option key={r.role_id} value={r.role_id}>
                     {formatRoleName(r.role_name)}
                   </option>
@@ -654,29 +741,53 @@ export default function UserRoles() {
           </div>
 
           <div className="grid grid-cols-2 gap-3.5">
-            <Field label="Role">
-              <Select
-                required
-                disabled={rolesLoading}
-                value={editUserForm.role_id}
-                onChange={(e) =>
-                  setEditUserForm({ ...editUserForm, role_id: e.target.value })
-                }
-              >
-                <option value="" disabled>
-                  {rolesLoading ? "Loading roles…" : "Select role"}
-                </option>
-                {roles.map((r) => (
-                  <option key={r.role_id} value={r.role_id}>
-                    {formatRoleName(r.role_name)}
+            <Field
+              label="Role"
+              hint={
+                editUserIsAdmin
+                  ? "Administrator role can't be changed here"
+                  : editUserRoleLocked
+                  ? "Supervisor can only manage Checking Officer accounts"
+                  : undefined
+              }
+            >
+              {editUserRoleLocked ? (
+                <TextInput
+                  value={editUserIsAdmin ? "Administrator" : "Checking Officer"}
+                  disabled
+                />
+              ) : (
+                <Select
+                  required
+                  disabled={rolesLoading}
+                  value={editUserForm.role_id}
+                  onChange={(e) =>
+                    setEditUserForm({ ...editUserForm, role_id: e.target.value })
+                  }
+                >
+                  <option value="" disabled>
+                    {rolesLoading ? "Loading roles…" : "Select role"}
                   </option>
-                ))}
-              </Select>
+                  {creatableRoles.map((r) => (
+                    <option key={r.role_id} value={r.role_id}>
+                      {formatRoleName(r.role_name)}
+                    </option>
+                  ))}
+                </Select>
+              )}
             </Field>
 
-            <Field label="Username">
+            <Field
+              label="Username"
+              hint={
+                editUserUsernameLocked
+                  ? "Supervisor cannot change username"
+                  : undefined
+              }
+            >
               <TextInput
                 required
+                disabled={editUserUsernameLocked}
                 value={editUserForm.username}
                 onChange={(e) =>
                   setEditUserForm({ ...editUserForm, username: e.target.value })
@@ -714,6 +825,25 @@ export default function UserRoles() {
               />
             </Field>
           </div>
+
+          {/* Administrator can reset the selected user's password without
+              entering the old password. The existing backend reset-password
+              endpoint hashes the new password and invalidates old sessions. */}
+          {isAdmin && (
+            <Field
+              label="New Password"
+              hint="Leave blank to keep current password • At least 8 characters"
+            >
+              <TextInput
+                type="password"
+                minLength={8}
+                value={editNewPassword}
+                onChange={(e) => setEditNewPassword(e.target.value)}
+                placeholder="Enter new password"
+                autoComplete="new-password"
+              />
+            </Field>
+          )}
 
           <div className="flex gap-3">
             <PillButton

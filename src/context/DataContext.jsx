@@ -2040,6 +2040,30 @@ export function DataProvider({
           };
         }
 
+        // Use the authenticated user's real role from the login session.
+        // The backend allows /v1/users only for Administrator/Supervisor,
+        // so other roles must not make this request at all.
+        const viewerRole = String(state.webSession?.role || "")
+          .trim()
+          .toLowerCase()
+          .replace(/[_\s]+/g, "");
+
+        const canLoadOfficers =
+          viewerRole === "administrator" ||
+          viewerRole === "supervisor";
+
+        if (!canLoadOfficers) {
+          dispatch({
+            type: "SET_OFFICERS",
+            payload: [],
+          });
+
+          return {
+            ok: true,
+            officers: [],
+          };
+        }
+
         try {
           const response = await fetch(
             `${API_BASE_URL}/v1/users`,
@@ -2930,14 +2954,6 @@ export function DataProvider({
           };
         }
 
-        if (!oldPassword) {
-          return {
-            ok: false,
-            error:
-              "Old password is required.",
-          };
-        }
-
         if (!newPassword) {
           return {
             ok: false,
@@ -2957,23 +2973,12 @@ export function DataProvider({
           };
         }
 
-        if (
-          oldPassword ===
-          newPassword
-        ) {
-          return {
-            ok: false,
-            error:
-              "New password must be different from old password.",
-          };
-        }
-
         try {
           const response =
             await fetch(
               `${API_BASE_URL}/v1/users/${encodeURIComponent(
                 userId
-              )}/change-password`,
+              )}/reset-password`,
               {
                 method: "POST",
 
@@ -2981,9 +2986,6 @@ export function DataProvider({
                   authHeaders(),
 
                 body: JSON.stringify({
-                  old_password:
-                    oldPassword,
-
                   new_password:
                     newPassword,
                 }),
@@ -3001,7 +3003,7 @@ export function DataProvider({
               error:
                 data.error ||
                 data.message ||
-                "Unable to change password.",
+                "Unable to reset password.",
             };
           }
 
@@ -3014,14 +3016,14 @@ export function DataProvider({
           };
         } catch (error) {
           console.error(
-            "Change password error:",
+            "Reset password error:",
             error
           );
 
           return {
             ok: false,
             error:
-              "Unable to connect to change password API.",
+              "Unable to connect to reset password API.",
           };
         }
       },
