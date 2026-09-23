@@ -53,6 +53,10 @@ export default function RoundInstances() {
   const canEdit =
     webSession?.role === "Administrator" || webSession?.role === "Supervisor";
 
+  // Round Instances can't be planned for a date in the past - only the
+  // min bound is enforced now, any future date is allowed.
+  const minRoundDate = todayISO();
+
   const [roundDate, setRoundDate] = useState(todayISO());
   const [shiftId, setShiftId] = useState("");
   const [picks, setPicks] = useState({}); // { [user_id]: schedule_id }
@@ -91,6 +95,23 @@ export default function RoundInstances() {
     actions.loadRoundInstances({ round_date: roundDate });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roundDate]);
+
+  // Keeps the date field honest even if something other than direct
+  // typing/picking sets an out-of-range value - blocks past dates but
+  // allows any date today or later.
+  function handleRoundDateChange(nextValue) {
+    if (!nextValue) {
+      setRoundDate(nextValue);
+      return;
+    }
+
+    if (nextValue < minRoundDate) {
+      alert("You can't plan rounds for a past date.");
+      return;
+    }
+
+    setRoundDate(nextValue);
+  }
 
   const roster = shiftAssignments.filter(
     (a) =>
@@ -183,12 +204,13 @@ export default function RoundInstances() {
     >
       <Card title="Plan Rounds for a Shift">
         <div className="grid grid-cols-2 gap-3.5">
-          <Field label="Date">
+          <Field label="Date" hint="Past dates are not allowed">
             <input
               type="date"
               className="w-full rounded-lg border border-border px-3 py-2 text-[13px]"
+              min={minRoundDate}
               value={roundDate}
-              onChange={(e) => setRoundDate(e.target.value)}
+              onChange={(e) => handleRoundDateChange(e.target.value)}
             />
           </Field>
 

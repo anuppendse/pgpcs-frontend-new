@@ -50,6 +50,7 @@ const STAT_GROUPS = [
       ["on_time_scans", "On Time"],
       ["late_scans", "Late"],
       ["out_of_sequence_scans", "Out of Sequence"],
+      
     ],
   },
   {

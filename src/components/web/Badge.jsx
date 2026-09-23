@@ -46,6 +46,7 @@ export function statusTone(status) {
       return "amber";
     case "missed":
     case "out_of_sequence":
+    case "invalid":
     case "open":
     case "On Leave":
     case "emergency":
@@ -63,6 +64,7 @@ export function statusLabel(status) {
     late: "Late",
     missed: "Missed",
     out_of_sequence: "Out of Sequence",
+    invalid: "Invalid",
     in_progress: "In Progress",
     open: "Open",
     acknowledged: "Acknowledged",

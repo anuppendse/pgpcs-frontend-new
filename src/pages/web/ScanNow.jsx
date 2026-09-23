@@ -28,6 +28,12 @@ export default function ScanNow() {
   const [schedulesById, setSchedulesById] = useState({});
 
   const isToday = roundDate === todayISO();
+  // Scanning is only allowed for today or future dates - a round dated
+  // in the past should never be scannable from here, even if it's
+  // still technically PENDING/IN_PROGRESS on the backend. Kept as a
+  // second line of defense even though the date picker below now also
+  // prevents picking a past date in the first place.
+  const isPastDate = roundDate < todayISO();
 
   // Rounds for the selected date. The backend already scopes this to
   // only the logged-in officer's own instances for a Checking Officer
@@ -271,6 +277,7 @@ export default function ScanNow() {
             type="date"
             className="w-full rounded-lg border border-border px-3 py-2 text-[13px]"
             value={roundDate}
+            min={todayISO()}
             onChange={(e) => setRoundDate(e.target.value)}
           />
         </div>
@@ -323,21 +330,21 @@ export default function ScanNow() {
           </div>
         )}
 
-        {selectedInstance && !isToday && (
+        {selectedInstance && isPastDate && (
           <div className="rounded-lg border border-border bg-white p-4 text-center text-[12px] text-inkSoft">
-            Scanning is only available for today's rounds. Select today's
-            date to scan.
+            Scanning is only available for today's or upcoming rounds.
+            Select today's date or a later date to scan.
           </div>
         )}
 
-        {selectedInstance && isToday && !selectedIsOpen && (
+        {selectedInstance && !isPastDate && !selectedIsOpen && (
           <div className="rounded-lg border border-border bg-white p-4 text-center text-[12px] text-inkSoft">
             This round is closed ({selectedInstance.status}). No further
             scanning is possible.
           </div>
         )}
 
-        {selectedInstance && isToday && selectedIsOpen && (
+        {selectedInstance && !isPastDate && selectedIsOpen && (
           <>
             {deviceError && (
               <div className="mb-3 rounded-lg border border-status-red bg-status-redBg p-3 text-center text-[12px] text-status-red">

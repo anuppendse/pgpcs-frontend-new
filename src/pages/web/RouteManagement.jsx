@@ -18,7 +18,8 @@ const emptyRouteForm = {
 
 export default function RouteManagement() {
   const { webSession, routes, routePosts, posts, actions } = useData();
-  const canEdit = webSession?.role === "Administrator";
+  const canEdit =
+    webSession?.role === "Administrator" || webSession?.role === "Supervisor";
 
   const [selectedId, setSelectedId] = useState(null);
   const selectedRoute = routes.find((r) => r.id === selectedId) || null;

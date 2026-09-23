@@ -14,7 +14,8 @@ const emptyForm = {
 
 export default function RoundSchedules() {
   const { webSession, shifts, routes, roundSchedules, actions } = useData();
-  const canEdit = webSession?.role === "Administrator";
+  const canEdit =
+    webSession?.role === "Administrator" || webSession?.role === "Supervisor";
 
   const [shiftId, setShiftId] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
