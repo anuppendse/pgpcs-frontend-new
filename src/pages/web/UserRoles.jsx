@@ -221,8 +221,13 @@ export default function UserRoles() {
   const [form, setForm] = useState({ ...emptyUserForm });
   const [saving, setSaving] = useState(false);
 
+  // Show/hide toggle for the Add User "Password" field - Eye/EyeOff
+  // were already imported above but never actually used anywhere.
+  const [showPassword, setShowPassword] = useState(false);
+
   function openAdd() {
     setForm({ ...emptyUserForm, role_id: creatableRoles[0]?.role_id ?? "" });
+    setShowPassword(false);
     setModalOpen(true);
   }
 
@@ -230,6 +235,7 @@ export default function UserRoles() {
     if (saving) return;
     setModalOpen(false);
     setForm({ ...emptyUserForm });
+    setShowPassword(false);
   }
 
   async function handleAddUser(e) {
@@ -351,12 +357,14 @@ export default function UserRoles() {
   const editUserRoleLocked = editUserIsAdmin || (isSupervisor && !isAdmin);
 
   // Supervisor's write access on the backend is scoped to
-  // full_name/phone/email only (see allowed_fields in users.py's
-  // update_user) - role_id and username are rejected with a 403 even
-  // if submitted. Locking Username here too (mirroring the Role field)
-  // keeps the UI honest about what will actually be saved, instead of
-  // showing an editable field that silently fails to persist.
+  // full_name/phone only (see allowed_fields in users.py's
+  // update_user) - role_id, username, and email are all rejected with a
+  // 403 even if submitted. Locking Username and Email here too
+  // (mirroring the Role field) keeps the UI honest about what will
+  // actually be saved, instead of showing editable fields that
+  // silently fail to persist.
   const editUserUsernameLocked = isSupervisor && !isAdmin;
+  const editUserEmailLocked = isSupervisor && !isAdmin;
 
   function openEditUser(u) {
     // Safety net: the Edit link is already hidden for rows this viewer
@@ -457,16 +465,16 @@ export default function UserRoles() {
       const payload = {
         full_name: editUserForm.full_name.trim(),
         phone: editUserForm.phone || null,
-        email: editUserForm.email || null,
       };
 
-      // Supervisor's backend route rejects role_id/username outright
-      // (403) even if the values are unchanged, so those two keys must
-      // be omitted from the payload entirely for Supervisor - not just
-      // left disabled in the UI.
+      // Supervisor's backend route rejects role_id/username/email
+      // outright (403) even if the values are unchanged, so those keys
+      // must be omitted from the payload entirely for Supervisor - not
+      // just left disabled in the UI.
       if (!(isSupervisor && !isAdmin)) {
         payload.role_id = Number(editUserForm.role_id);
         payload.username = editUserForm.username.trim();
+        payload.email = editUserForm.email || null;
       }
 
       const result = await actions.updateUserApi(editingUserId, payload);
@@ -496,6 +504,10 @@ export default function UserRoles() {
           }.`
         );
       }
+
+      // Refresh so the table (and any subsequent edit) reflects exactly
+      // what the backend actually persisted.
+      await actions.loadUsers();
 
       setEditUserModalOpen(false);
       setEditingUserId(null);
@@ -653,17 +665,29 @@ export default function UserRoles() {
             label="Password"
             hint="Must be at least 8 characters"
           >
-            <TextInput
-              type="password"
-              required
-              minLength={8}
-              value={form.password}
-              onChange={(e) =>
-                setForm({ ...form, password: e.target.value })
-              }
-              placeholder="Set an initial password"
-              autoComplete="new-password"
-            />
+            <div className="relative">
+              <TextInput
+                type={showPassword ? "text" : "password"}
+                required
+                minLength={8}
+                value={form.password}
+                onChange={(e) =>
+                  setForm({ ...form, password: e.target.value })
+                }
+                placeholder="Set an initial password"
+                autoComplete="new-password"
+                className="pr-10"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((prev) => !prev)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-inkSoft hover:text-navy"
+                tabIndex={-1}
+                aria-label={showPassword ? "Hide password" : "Show password"}
+              >
+                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
           </Field>
 
           <div className="grid grid-cols-2 gap-3.5">
@@ -814,9 +838,17 @@ export default function UserRoles() {
               />
             </Field>
 
-            <Field label="Email (optional)">
+            <Field
+              label="Email (optional)"
+              hint={
+                editUserEmailLocked
+                  ? "Supervisor cannot change email"
+                  : undefined
+              }
+            >
               <TextInput
                 type="email"
+                disabled={editUserEmailLocked}
                 value={editUserForm.email}
                 onChange={(e) =>
                   setEditUserForm({ ...editUserForm, email: e.target.value })
