@@ -2185,7 +2185,7 @@ export function DataProvider({
          like loadUsers() already works for User Roles & Access.
       =================================================== */
 
-      loadOfficers: async () => {
+      loadOfficers: async (params = {}) => {
         if (!token) {
           return {
             ok: false,
@@ -2218,8 +2218,15 @@ export function DataProvider({
         }
 
         try {
+          // Optional filters, e.g. loadOfficers({ status: "ACTIVE" })
+          const searchParams = new URLSearchParams();
+          if (params.status) {
+            searchParams.set("status", String(params.status));
+          }
+          const query = searchParams.toString();
+
           const response = await fetch(
-            `${API_BASE_URL}/v1/users`,
+            `${API_BASE_URL}/v1/users${query ? `?${query}` : ""}`,
             {
               method: "GET",
               headers: authHeaders(),

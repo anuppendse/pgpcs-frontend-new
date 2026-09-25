@@ -153,7 +153,8 @@ export default function ShiftManagement() {
     if (!webSession?.accessToken) return;
     actions.loadShifts();
     actions.loadShiftAssignments();
-    actions.loadOfficers();
+    // Only active users are needed for the assignment dropdown.
+    actions.loadOfficers({ status: "ACTIVE" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [webSession?.accessToken]);
 
@@ -354,7 +355,8 @@ export default function ShiftManagement() {
   const [savingAssignment, setSavingAssignment] = useState(false);
 
   // Only Checking Officers can be assigned to a shift here - Supervisors
-  // are excluded from this dropdown entirely.
+  // are excluded. The list is already limited to ACTIVE users by the API
+  // call above (loadOfficers({ status: "ACTIVE" })).
   const checkingOfficers = officers.filter(
     (o) => normalizeRoleKey(o.role || o.role_name) === normalizeRoleKey("Checking Officer")
   );
@@ -695,7 +697,7 @@ export default function ShiftManagement() {
             >
               {checkingOfficers.length === 0 && (
                 <option value="" disabled>
-                  No Checking Officers available
+                  No active Checking Officers available
                 </option>
               )}
               {checkingOfficers.map((o) => (
