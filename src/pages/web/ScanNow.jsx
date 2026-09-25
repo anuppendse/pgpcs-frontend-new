@@ -149,23 +149,22 @@ export default function ScanNow() {
     return `Round ${schedule.round_no} — ${route} — ${time}`;
   }
 
+  // NOTE: the device is NOT registered on load - only on the first
+  // scan (see handleScan). On load we only do a local, no-network
+  // check that this device isn't bound to a different officer.
+  const [deviceBlocked, setDeviceBlocked] = useState(false);
   useEffect(() => {
-    if (!webSession?.accessToken) return;
-
-    let cancelled = false;
-    actions.getOrRegisterDeviceId().then((result) => {
-      if (cancelled) return;
-      if (result?.ok) {
-        setDeviceId(result.deviceId);
-      } else {
-        setDeviceError(result?.error || "Unable to register this device.");
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
+    if (!webSession?.id) return;
+    const ownership = actions.checkDeviceOwnership();
+    if (!ownership.ok) {
+      setDeviceBlocked(true);
+      setDeviceError(ownership.error);
+    } else {
+      setDeviceBlocked(false);
+      setDeviceError(null);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [webSession?.accessToken]);
+  }, [webSession?.id]);
 
   // Real scan history for the selected round, from the backend -
   // this is what actually survives navigating away and back, unlike
@@ -205,15 +204,58 @@ export default function ScanNow() {
     setSelectedInstanceId(myRounds[0].id);
   }, [myRounds, selectedInstanceId]);
 
+  async function ensureDevice() {
+    const deviceResult = await actions.getOrRegisterDeviceId();
+    if (!deviceResult?.ok) {
+      if (deviceResult?.notOwner) setDeviceBlocked(true);
+      setDeviceError(deviceResult?.error || "Unable to register this device.");
+      return null;
+    }
+    setDeviceId(deviceResult.deviceId);
+    setDeviceError(null);
+    return deviceResult.deviceId;
+  }
+
   async function handleScan(qrValue) {
-    if (!selectedInstance || !deviceId || submitting) return;
+    if (!selectedInstance || submitting || deviceBlocked) return;
 
     setSubmitting(true);
-    const result = await actions.createScan({
-      round_instance_id: selectedInstance.id,
-      qr_value: qrValue,
-      device_id: deviceId,
-    });
+
+    // First scan on this device: registers it (DB + localStorage) and
+    // binds it to this officer. Later scans reuse the stored id.
+    let activeDeviceId = deviceId || (await ensureDevice());
+    if (!activeDeviceId) {
+      setSubmitting(false);
+      return;
+    }
+
+    const submit = (id) =>
+      actions.createScan({
+        round_instance_id: selectedInstance.id,
+        qr_value: qrValue,
+        device_id: id,
+      });
+
+    let result = await submit(activeDeviceId);
+
+    // Cached device_id no longer exists on the backend (e.g. DB reset):
+    // forget it and re-register this same device once, then retry.
+    if (!result?.ok && /device_id .* not found/i.test(result?.error || "")) {
+      actions.forgetCachedDeviceId();
+      setDeviceId(null);
+      activeDeviceId = await ensureDevice();
+      if (!activeDeviceId) {
+        setSubmitting(false);
+        return;
+      }
+      result = await submit(activeDeviceId);
+    }
+
+    // Backend says this device belongs to someone else.
+    if (!result?.ok && /registered to another officer/i.test(result?.error || "")) {
+      setDeviceBlocked(true);
+      setDeviceError(result.error);
+    }
     setSubmitting(false);
 
     // Just the latest attempt - transient feedback shown right after
@@ -259,6 +301,12 @@ export default function ScanNow() {
       requiredModule="Scan Now"
     >
       <div className="mx-auto max-w-md py-2">
+        {deviceBlocked && (
+          <div className="mb-4 rounded-lg border border-status-red bg-status-redBg p-4 text-center text-[13px] font-semibold text-status-red">
+            {deviceError}
+          </div>
+        )}
+
         <div className="mb-4 rounded-lg border border-border bg-white p-4">
           <div className="mb-2 flex items-center justify-between">
             <div className="text-[13px] font-bold text-navy">
@@ -346,19 +394,13 @@ export default function ScanNow() {
 
         {selectedInstance && !isPastDate && selectedIsOpen && (
           <>
-            {deviceError && (
+            {deviceError && !deviceBlocked && (
               <div className="mb-3 rounded-lg border border-status-red bg-status-redBg p-3 text-center text-[12px] text-status-red">
                 {deviceError}
               </div>
             )}
 
-            {!deviceError && !deviceId && (
-              <div className="mb-3 rounded-lg border border-border bg-white p-3 text-center text-[12px] text-inkSoft">
-                Setting up this device...
-              </div>
-            )}
-
-            {deviceId && (
+            {!deviceBlocked && (
               <div className="rounded-lg border border-border bg-white p-4">
                 <div className="mb-3 text-center text-[13px] font-semibold text-navy">
                   {describeRound(selectedInstance)}

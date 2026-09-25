@@ -1267,6 +1267,11 @@ export function DataProvider({
   const roundInstancesRequestRef = useRef(0);
   const roundSchedulesRequestRef = useRef({});
   const shiftAssignmentsRequestRef = useRef(0);
+  // In-flight device registration promise. Guarantees that
+  // concurrent callers (e.g. two rapid scans, or React StrictMode's
+  // double-invoke in dev) share ONE POST /devices instead of each
+  // firing their own.
+  const deviceRegistrationRef = useRef(null);
 
   /* =======================================================
      SAVE FULL STATE TO STORAGE
@@ -1709,7 +1714,7 @@ export function DataProvider({
               )
           : "Active";
 
-      return {
+    return {
         ...user,
 
         id:
@@ -1800,6 +1805,154 @@ export function DataProvider({
           user.deleted_at ??
           null,
       };
+    };
+
+    /* -------------------------------------------------------
+       DEVICE BINDING
+       A device (this browser) is bound to the officer who first
+       scans on it. localStorage holds:
+         pgpcs_device_id       - backend device_id
+         pgpcs_device_code     - permanent random identity of this device
+         pgpcs_device_owner_id - user_id of the officer who owns it
+       Any other officer on this device is blocked.
+    ------------------------------------------------------- */
+    const DEVICE_ID_KEY = "pgpcs_device_id";
+    const DEVICE_CODE_KEY = "pgpcs_device_code";
+    const DEVICE_OWNER_KEY = "pgpcs_device_owner_id";
+    const NOT_OWNER_ERROR =
+      "This device is registered to another officer. Please use your own device.";
+
+    const safeGet = (key) => {
+      try {
+        return localStorage.getItem(key);
+      } catch {
+        return null;
+      }
+    };
+    const safeSet = (key, value) => {
+      try {
+        localStorage.setItem(key, value);
+      } catch (error) {
+        console.error("Unable to persist device info:", error);
+      }
+    };
+
+    // One-time migration from the old per-officer keys
+    // (pgpcs_device_id_<userId> / pgpcs_device_code_<userId>). The
+    // first officer found becomes this device's owner.
+    const migrateLegacyDeviceKeys = () => {
+      if (safeGet(DEVICE_CODE_KEY)) return;
+      try {
+        for (let i = 0; i < localStorage.length; i += 1) {
+          const key = localStorage.key(i);
+          const match = key && key.match(/^pgpcs_device_code_(.+)$/);
+          if (!match) continue;
+          const legacyCode = localStorage.getItem(key);
+          if (!legacyCode) continue;
+          const legacyId = localStorage.getItem(`pgpcs_device_id_${match[1]}`);
+          safeSet(DEVICE_CODE_KEY, legacyCode);
+          if (legacyId) safeSet(DEVICE_ID_KEY, legacyId);
+          safeSet(DEVICE_OWNER_KEY, match[1]);
+          break;
+        }
+      } catch {
+        // localStorage unavailable
+      }
+    };
+
+    // Local-only ownership check - makes NO API call. Returns
+    // { ok: true } if this device is unregistered or owned by the
+    // current user, else { ok: false, notOwner: true, error }.
+    const checkLocalDeviceOwner = () => {
+      migrateLegacyDeviceKeys();
+      const userId = state.webSession?.id;
+      const ownerId = safeGet(DEVICE_OWNER_KEY);
+      if (ownerId && userId != null && String(ownerId) !== String(userId)) {
+        return { ok: false, notOwner: true, error: NOT_OWNER_ERROR };
+      }
+      return { ok: true };
+    };
+
+    const resolveDeviceId = async () => {
+      if (!token) {
+        return { ok: false, error: "Authentication token is missing." };
+      }
+      const userId = state.webSession?.id;
+      if (userId == null) {
+        return { ok: false, error: "Current user is not known yet." };
+      }
+
+      const ownership = checkLocalDeviceOwner();
+      if (!ownership.ok) return ownership;
+
+      // device_code is generated once and never regenerated, so this
+      // device always maps to the same backend row.
+      let deviceCode = safeGet(DEVICE_CODE_KEY);
+      if (!deviceCode) {
+        deviceCode =
+          typeof crypto !== "undefined" && crypto.randomUUID
+            ? crypto.randomUUID()
+            : `dev-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        safeSet(DEVICE_CODE_KEY, deviceCode);
+      }
+
+      const cachedId = safeGet(DEVICE_ID_KEY);
+      const cachedOwner = safeGet(DEVICE_OWNER_KEY);
+      if (cachedId && cachedOwner) {
+        // Already registered to this officer - no API call needed.
+        return { ok: true, deviceId: Number(cachedId) };
+      }
+
+      // Not registered yet (or owner unknown): POST is idempotent on
+      // device_code - it creates the device on the very first scan,
+      // or returns the existing one if it's already in the database.
+      try {
+        const response = await fetch(`${API_BASE_URL}/devices`, {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify({
+            device_code: deviceCode,
+            device_name: state.webSession?.name
+              ? `${state.webSession.name}'s device`
+              : "Officer device",
+            assigned_to_user_id: userId,
+          }),
+        });
+
+        const result = await parseResponse(response);
+
+        if (response.status === 403 && result?.code === "DEVICE_NOT_OWNED") {
+          if (result.assigned_to_user_id != null) {
+            safeSet(DEVICE_OWNER_KEY, String(result.assigned_to_user_id));
+          }
+          return { ok: false, notOwner: true, error: result.error || NOT_OWNER_ERROR };
+        }
+
+        if (!response.ok || !result?.device_id) {
+          return {
+            ok: false,
+            error: result?.error || result?.message || "Unable to register device.",
+          };
+        }
+
+        safeSet(DEVICE_ID_KEY, String(result.device_id));
+        safeSet(
+          DEVICE_OWNER_KEY,
+          String(result.assigned_to_user_id ?? userId)
+        );
+
+        if (
+          result.assigned_to_user_id != null &&
+          String(result.assigned_to_user_id) !== String(userId)
+        ) {
+          return { ok: false, notOwner: true, error: NOT_OWNER_ERROR };
+        }
+
+        return { ok: true, deviceId: result.device_id };
+      } catch (error) {
+        console.error("Register device error:", error);
+        return { ok: false, error: "Unable to connect to Devices API." };
+      }
     };
 
     return {
@@ -5662,98 +5815,39 @@ export function DataProvider({
          DEVICE SELF-REGISTRATION (for the Scan Now kiosk)
          ---------------------------------------------------
          The browser/kiosk doing the scanning has no device_id of
-         its own. On first use it generates a random device_code,
+         its own. On first scan it generates a random device_code,
          registers it with the backend to get a real device_id,
-         and caches that in localStorage forever after - see the
-         "how does device_id get captured" discussion this came
-         out of. Returns the numeric device_id either way.
+         and caches it in localStorage together with the owning
+         officer. Other officers are refused on this device.
       =================================================== */
 
-      getOrRegisterDeviceId: async () => {
-        if (!token) {
-          return { ok: false, error: "Authentication token is missing." };
-        }
+      // Synchronous, no network call - used by Scan Now on load to
+      // block an officer who isn't this device's owner.
+      checkDeviceOwnership: () => checkLocalDeviceOwner(),
 
-        const userId = state.webSession?.id;
-        if (!userId) {
-          return { ok: false, error: "Current user is not known yet." };
-        }
-
-        // Keyed per officer, not just per browser - two different
-        // officers sharing the same browser/phone must never end up
-        // sharing one device_id, and this device row should be
-        // traceable back to the officer who registered it (see
-        // assigned_to_user_id below).
-        const idKey = `pgpcs_device_id_${userId}`;
-        const codeKey = `pgpcs_device_code_${userId}`;
-
-        const cachedId = localStorage.getItem(idKey);
-        if (cachedId) {
-          // Don't just trust a cached device_id blindly - if the
-          // database was reset/reseeded (common in dev/testing) or an
-          // admin deleted this device, the cached ID now points at
-          // nothing. Verify it still exists; if not, clear the stale
-          // cache and fall through to re-registering fresh below,
-          // rather than returning an ID that will just fail on the
-          // next scan with no way to recover without manually
-          // clearing localStorage.
-          try {
-            const checkResponse = await fetch(
-              `${API_BASE_URL}/devices/${cachedId}`,
-              { method: "GET", headers: authHeaders() }
-            );
-            if (checkResponse.ok) {
-              return { ok: true, deviceId: Number(cachedId) };
-            }
-            // 404 (or anything else not-ok) - stale, clear and
-            // re-register below.
-            localStorage.removeItem(idKey);
-            localStorage.removeItem(codeKey);
-          } catch (error) {
-            // Network hiccup checking - don't discard a possibly-valid
-            // cached ID just because the verification call failed.
-            console.error("Verify cached device error:", error);
-            return { ok: true, deviceId: Number(cachedId) };
-          }
-        }
-
-        let deviceCode = localStorage.getItem(codeKey);
-        if (!deviceCode) {
-          deviceCode =
-            typeof crypto !== "undefined" && crypto.randomUUID
-              ? crypto.randomUUID()
-              : `dev-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-          localStorage.setItem(codeKey, deviceCode);
-        }
-
+      // Drop a cached device_id the backend no longer knows (e.g. DB
+      // reset). Keeps device_code, so re-registering maps to the same
+      // physical device.
+      forgetCachedDeviceId: () => {
         try {
-          const response = await fetch(`${API_BASE_URL}/devices`, {
-            method: "POST",
-            headers: authHeaders(),
-            body: JSON.stringify({
-              device_code: deviceCode,
-              device_name: state.webSession?.name
-                ? `${state.webSession.name}'s device`
-                : "Officer device",
-              assigned_to_user_id: userId,
-            }),
-          });
-
-          const result = await parseResponse(response);
-
-          if (!response.ok) {
-            return {
-              ok: false,
-              error: result.error || result.message || "Unable to register device.",
-            };
-          }
-
-          localStorage.setItem(idKey, String(result.device_id));
-          return { ok: true, deviceId: result.device_id };
-        } catch (error) {
-          console.error("Register device error:", error);
-          return { ok: false, error: "Unable to connect to Devices API." };
+          localStorage.removeItem(DEVICE_ID_KEY);
+          localStorage.removeItem(DEVICE_OWNER_KEY);
+        } catch {
+          // ignore
         }
+      },
+
+      getOrRegisterDeviceId: () => {
+        if (deviceRegistrationRef.current) {
+          return deviceRegistrationRef.current;
+        }
+        const promise = resolveDeviceId().finally(() => {
+          if (deviceRegistrationRef.current === promise) {
+            deviceRegistrationRef.current = null;
+          }
+        });
+        deviceRegistrationRef.current = promise;
+        return promise;
       },
 
       /* ===================================================
